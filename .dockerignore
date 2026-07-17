@@ -1,0 +1,17 @@
+# 排除不需要打包的文件
+.venv
+libs
+data
+__pycache__
+*.pyc
+*.pyo
+.env
+.git
+.gitignore
+.pytest_cache
+logs
+uploads
+*.db
+*.sqlite3
+frontend/node_modules
+frontend/dist
