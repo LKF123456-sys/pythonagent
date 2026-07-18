@@ -441,46 +441,135 @@ async def run_agent_stream(
     user_id: int = 0,
 ) -> AsyncGenerator[str, None]:
     """
-    异步流式执行多智能体工作流，逐 token 产出回答。
+    异步流式执行多智能体工作流，产出回答。
 
-    使用 LangGraph 的 astream_events 接口，在回答节点
-    实时产出文本 token，供 SSE 推送给前端。
+    手动执行工作流各节点，在回答节点使用真正的 LLM 流式调用。
+    在搜索节点显示"联网搜索中"。
 
     Yields:
         str: JSON 格式的 SSE 事件数据
     """
     import json as _json
-
-    graph = build_graph()
-    config = {"configurable": {"thread_id": thread_id}}
-    input_state = {
-        "messages": [HumanMessage(content=user_question)],
-        "user_question": user_question,
-        "image_path": image_path,
-        "is_first_turn": is_first_turn,
-        "user_id": user_id,
-    }
+    from agents import generate_answer_stream
 
     answer_text = ""
 
     try:
-        async for event in graph.astream_events(input_state, config, version="v2"):
-            kind = event.get("event")
+        # 步骤1：预处理节点（图片识别 + 长期记忆 + RAG）
+        yield f"data: {_json.dumps({'type': 'status', 'node': 'preprocess'}, ensure_ascii=False)}\n\n"
+        preprocess_state = {
+            "user_question": user_question,
+            "image_path": image_path,
+            "messages": [],
+        }
+        preprocess_result = preprocess_node(preprocess_state)
+        image_analysis = preprocess_result.get("image_analysis", "")
+        long_term_memories = preprocess_result.get("long_term_memories", "")
+        rag_context = preprocess_result.get("rag_context", "")
 
-            # 节点开始/结束：推送状态信息
-            if kind == "on_chain_start" and event.get("name") in (
-                "preprocess", "supervisor", "search", "rag", "answer", "store_memory"
-            ):
-                node_name = event["name"]
-                yield f"data: {_json.dumps({'type': 'status', 'node': node_name}, ensure_ascii=False)}\n\n"
+        # 步骤2：调度主管节点
+        yield f"data: {_json.dumps({'type': 'status', 'node': 'supervisor'}, ensure_ascii=False)}\n\n"
+        supervisor_state = {
+            "user_question": user_question,
+            "messages": [HumanMessage(content=user_question)],
+        }
+        supervisor_result = supervisor_node(supervisor_state)
+        action = supervisor_result.get("action", "DIRECT")
 
-            # LLM 流式 token：推送文本增量
-            if kind == "on_chat_model_stream":
-                chunk = event.get("data", {}).get("chunk")
-                if chunk and hasattr(chunk, "content") and chunk.content:
-                    token = chunk.content
-                    answer_text += token
-                    yield f"data: {_json.dumps({'type': 'token', 'content': token}, ensure_ascii=False)}\n\n"
+        # 步骤3：根据路由执行搜索或RAG
+        search_results = ""
+        if action == "SEARCH":
+            yield f"data: {_json.dumps({'type': 'status', 'node': 'search'}, ensure_ascii=False)}\n\n"
+            yield f"data: {_json.dumps({'type': 'token', 'content': '联网搜索中'}, ensure_ascii=False)}\n\n"
+            search_state = {"user_question": user_question}
+            search_result = search_node(search_state)
+            search_results = search_result.get("search_results", "")
+        elif action == "RAG":
+            yield f"data: {_json.dumps({'type': 'status', 'node': 'rag'}, ensure_ascii=False)}\n\n"
+            rag_state = {"user_question": user_question, "rag_context": rag_context}
+            rag_result = rag_node(rag_state)
+            rag_context = rag_result.get("rag_context", rag_context)
+
+        # 步骤4：回答节点（流式输出）
+        yield f"data: {_json.dumps({'type': 'status', 'node': 'answer'}, ensure_ascii=False)}\n\n"
+        
+        # 提取对话历史
+        history_context = ""  # 流式模式下暂不提取历史，简化处理
+        
+        # 使用流式 LLM 调用，解析 thinking 和 answer 标签
+        in_thinking = False
+        in_answer = False
+        buffer = ""
+        tag_buffer = ""  # 用于累积可能的标签
+        
+        async for token in generate_answer_stream(
+            user_question=user_question,
+            search_results=search_results,
+            rag_context=rag_context,
+            long_term_memories=long_term_memories,
+            image_analysis=image_analysis,
+            history_context=history_context,
+        ):
+            buffer += token
+            
+            # 检查是否有标签开始
+            if "<" in buffer and not in_thinking and not in_answer:
+                # 可能开始一个标签，检查是否是 thinking 或 answer
+                if "<thinking>" in buffer:
+                    in_thinking = True
+                    buffer = buffer.replace("<thinking>", "", 1)
+                    continue
+                elif "<answer>" in buffer:
+                    in_answer = True
+                    buffer = buffer.replace("<answer>", "", 1)
+                    continue
+                elif buffer.endswith("<") or buffer.endswith("<t") or buffer.endswith("<th") or \
+                     buffer.endswith("<thi") or buffer.endswith("<thin") or buffer.endswith("<think") or \
+                     buffer.endswith("<thinki") or buffer.endswith("<thinkin") or buffer.endswith("<thinking") or \
+                     buffer.endswith("<a") or buffer.endswith("<an") or buffer.endswith("<ans") or \
+                     buffer.endswith("<answ") or buffer.endswith("<answe") or buffer.endswith("<answer"):
+                    # 可能是不完整的标签，继续累积
+                    continue
+            
+            # 检查是否有结束标签
+            if "</thinking>" in buffer and in_thinking:
+                parts = buffer.split("</thinking>", 1)
+                if parts[0].strip():
+                    yield f"data: {_json.dumps({'type': 'thinking', 'content': parts[0]}, ensure_ascii=False)}\n\n"
+                buffer = parts[1] if len(parts) > 1 else ""
+                in_thinking = False
+                continue
+            elif "</answer>" in buffer and in_answer:
+                parts = buffer.split("</answer>", 1)
+                if parts[0].strip():
+                    yield f"data: {_json.dumps({'type': 'token', 'content': parts[0]}, ensure_ascii=False)}\n\n"
+                    answer_text += parts[0]
+                buffer = parts[1] if len(parts) > 1 else ""
+                in_answer = False
+                continue
+            
+            # 检查是否有不完整的结束标签
+            if in_thinking and (buffer.endswith("</") or buffer.endswith("</t") or buffer.endswith("</th") or \
+               buffer.endswith("</thi") or buffer.endswith("</thin") or buffer.endswith("</think") or \
+               buffer.endswith("</thinki") or buffer.endswith("</thinkin") or buffer.endswith("</thinking")):
+                continue
+            elif in_answer and (buffer.endswith("</") or buffer.endswith("</a") or buffer.endswith("</an") or \
+               buffer.endswith("</ans") or buffer.endswith("</answ") or buffer.endswith("</answe") or \
+               buffer.endswith("</answer")):
+                continue
+            
+            # 推送内容
+            if buffer:
+                if in_thinking:
+                    yield f"data: {_json.dumps({'type': 'thinking', 'content': buffer}, ensure_ascii=False)}\n\n"
+                elif in_answer or not buffer.startswith("<"):
+                    # 如果在 answer 标签内，或者不是标签开始，直接推送
+                    yield f"data: {_json.dumps({'type': 'token', 'content': buffer}, ensure_ascii=False)}\n\n"
+                    answer_text += buffer
+                buffer = ""
+
+        # 步骤5：记忆存储节点
+        yield f"data: {_json.dumps({'type': 'status', 'node': 'store_memory'}, ensure_ascii=False)}\n\n"
 
         # 流结束：保存会话元数据（异步）
         try:

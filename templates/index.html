@@ -101,8 +101,67 @@
         .message.user .avatar { background: #1565c0; color: #fff; }
         .message.assistant .avatar { background: #e3f2fd; color: #1565c0; }
         .bubble { padding: 10px 14px; line-height: 1.6; font-size: 14px;
-            white-space: pre-wrap; word-break: break-word; }
+            word-break: break-word; }
         .bubble img { max-width: 200px; border-radius: 8px; margin: 6px 0; cursor: pointer; }
+
+        /* 思考过程区域 */
+        .thinking-box {
+            background: #f8f9fa; border: 1px solid #e8eaed; border-radius: 10px;
+            margin-bottom: 10px; overflow: hidden;
+        }
+        .thinking-header {
+            padding: 8px 12px; cursor: pointer; display: flex; align-items: center;
+            gap: 8px; font-size: 12px; color: #5f6368; user-select: none;
+            background: #f1f3f4; border-bottom: 1px solid #e8eaed;
+        }
+        .thinking-header:hover { background: #e8eaed; }
+        .thinking-header .arrow { transition: transform 0.2s; font-size: 10px; }
+        .thinking-header .arrow.open { transform: rotate(90deg); }
+        .thinking-header .label { font-weight: 500; }
+        .thinking-header .status { margin-left: auto; font-size: 11px; color: #9aa0a6; }
+        .thinking-content {
+            padding: 10px 12px; font-size: 13px; line-height: 1.6; color: #5f6368;
+            white-space: pre-wrap; word-break: break-word; max-height: 300px;
+            overflow-y: auto; display: none;
+        }
+        .thinking-content.open { display: block; }
+
+        /* 回答区域 Markdown 样式 */
+        .answer-box { padding: 10px 14px; line-height: 1.7; font-size: 14px; color: #333; }
+        .answer-box h1, .answer-box h2, .answer-box h3, .answer-box h4 {
+            margin: 12px 0 6px; font-weight: 600; color: #1a1a2e;
+        }
+        .answer-box h1 { font-size: 18px; }
+        .answer-box h2 { font-size: 16px; }
+        .answer-box h3 { font-size: 15px; }
+        .answer-box p { margin: 6px 0; }
+        .answer-box ul, .answer-box ol { padding-left: 20px; margin: 6px 0; }
+        .answer-box li { margin: 3px 0; }
+        .answer-box code {
+            background: #f1f3f4; padding: 1px 5px; border-radius: 4px;
+            font-size: 13px; font-family: 'Consolas', 'Monaco', monospace;
+        }
+        .answer-box pre {
+            background: #1e1e1e; color: #d4d4d4; padding: 12px 16px;
+            border-radius: 8px; overflow-x: auto; margin: 8px 0; font-size: 13px;
+            line-height: 1.5;
+        }
+        .answer-box pre code {
+            background: none; padding: 0; color: inherit; font-size: inherit;
+        }
+        .answer-box blockquote {
+            border-left: 3px solid #1a73e8; padding: 4px 12px; margin: 8px 0;
+            color: #5f6368; background: #f8f9fa; border-radius: 0 6px 6px 0;
+        }
+        .answer-box table { border-collapse: collapse; margin: 8px 0; width: 100%; }
+        .answer-box th, .answer-box td {
+            border: 1px solid #e0e0e0; padding: 6px 10px; text-align: left; font-size: 13px;
+        }
+        .answer-box th { background: #f1f3f4; font-weight: 600; }
+        .answer-box a { color: #1a73e8; text-decoration: none; }
+        .answer-box a:hover { text-decoration: underline; }
+        .answer-box strong { font-weight: 600; color: #1a1a2e; }
+        .answer-box hr { border: none; border-top: 1px solid #e0e0e0; margin: 10px 0; }
         .status-msg { align-self: flex-start; display: flex; align-items: center;
             gap: 8px; color: #90a4ae; font-size: 13px; padding: 4px 0; }
         .status-msg .dot { width: 8px; height: 8px; border-radius: 50%;
@@ -517,6 +576,46 @@
             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
         }
 
+        // ========== 轻量 Markdown 渲染器 ==========
+        function renderMarkdown(text) {
+            if (!text) return "";
+            let html = text;
+            // 代码块（```...```）
+            html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code) {
+                return '<pre><code>' + escapeHtml(code.trim()) + '</code></pre>';
+            });
+            // 行内代码
+            html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+            // 标题
+            html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+            html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+            html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+            html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+            // 粗体
+            html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            // 斜体
+            html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+            // 引用
+            html = html.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
+            // 无序列表
+            html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+            html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+            // 有序列表
+            html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+            // 分割线
+            html = html.replace(/^---$/gm, '<hr>');
+            // 链接
+            html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+            // 段落：将连续非标签行包裹为 <p>
+            html = html.replace(/^(?!<[a-z/])((?!^\s*$).+)$/gm, '<p>$1</p>');
+            // 清理多余空行
+            html = html.replace(/\n{2,}/g, '\n');
+            return html;
+        }
+        function escapeHtml(text) {
+            return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        }
+
         // 发送消息（使用 SSE 流式响应）
         async function sendMessage() {
             if (isWaiting) return;
@@ -537,15 +636,15 @@
             sendBtn.disabled = true;
             const statusEl = addStatus("正在处理中...");
 
-            // 创建 AI 回复气泡（流式填充）
-            const aiBubble = addMessage("assistant", "");
-            let fullText = "";
+            // 创建 AI 回复容器（思考 + 回答）
+            const aiContainer = addAIMessage();
+            let thinkingText = "";
+            let answerText = "";
             let currentNode = "";
 
             try {
                 let bodyData;
                 if (uploadedImageFile) {
-                    // 有图片时：先上传图片，再用 JSON 请求流式接口
                     const formData = new FormData();
                     formData.append("image", uploadedImageFile);
                     const uploadResp = await apiFetch("/api/upload/image", { method: "POST", body: formData });
@@ -563,14 +662,12 @@
                     };
                 }
 
-                // 使用 SSE 流式接口
                 const response = await apiFetch("/api/chat/stream", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify(bodyData),
                 });
 
-                statusEl.remove();
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = "";
@@ -581,39 +678,114 @@
 
                     buffer += decoder.decode(value, { stream: true });
                     const lines = buffer.split("\n");
-                    buffer = lines.pop(); // 保留未完成的行
+                    buffer = lines.pop();
 
                     for (const line of lines) {
                         if (!line.startsWith("data: ")) continue;
                         try {
                             const evt = JSON.parse(line.slice(6));
-                            if (evt.type === "token") {
-                                fullText += evt.content;
-                                aiBubble.textContent = fullText;
+                            if (evt.type === "thinking") {
+                                thinkingText += evt.content;
+                                updateThinking(aiContainer, thinkingText, false);
+                                chatContainer.scrollTop = chatContainer.scrollHeight;
+                            } else if (evt.type === "token") {
+                                answerText += evt.content;
+                                updateAnswer(aiContainer, answerText);
                                 chatContainer.scrollTop = chatContainer.scrollHeight;
                             } else if (evt.type === "status") {
                                 currentNode = evt.node;
-                                statusEl.textContent = `处理中: ${evt.node}...`;
+                                statusEl.innerHTML = '<span class="dot"></span>处理中: ' + evt.node + '...';
                             } else if (evt.type === "error") {
-                                aiBubble.textContent = "错误: " + evt.error;
+                                updateAnswer(aiContainer, "错误: " + evt.error);
                             }
                         } catch (parseErr) { /* 忽略解析错误 */ }
                     }
                 }
 
-                if (!fullText) {
-                    aiBubble.textContent = "（未收到回复）";
+                statusEl.remove();
+                // 思考完成：折叠思考区域
+                if (thinkingText) {
+                    updateThinking(aiContainer, thinkingText, true);
+                }
+                if (!answerText && !thinkingText) {
+                    updateAnswer(aiContainer, "（未收到回复）");
                 }
                 isFirstTurn = false;
                 removeImage();
                 loadConversations();
             } catch(err) {
                 statusEl.remove();
-                aiBubble.textContent = "网络请求失败，请检查服务。";
+                updateAnswer(aiContainer, "网络请求失败，请检查服务。");
             } finally {
                 isWaiting = false;
                 sendBtn.disabled = false;
             }
+        }
+
+        // 创建 AI 消息容器（思考 + 回答）
+        function addAIMessage() {
+            const div = document.createElement("div");
+            div.className = "message assistant";
+            const avatar = document.createElement("div");
+            avatar.className = "avatar";
+            avatar.textContent = "AI";
+            const bubble = document.createElement("div");
+            bubble.className = "bubble";
+            bubble.style.padding = "0";
+            bubble.style.background = "transparent";
+            bubble.style.boxShadow = "none";
+            div.appendChild(avatar);
+            div.appendChild(bubble);
+            chatContainer.appendChild(div);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            return bubble;
+        }
+
+        // 更新思考区域
+        function updateThinking(container, text, finished) {
+            let thinkingBox = container.querySelector(".thinking-box");
+            if (!thinkingBox) {
+                thinkingBox = document.createElement("div");
+                thinkingBox.className = "thinking-box";
+                thinkingBox.innerHTML = `
+                    <div class="thinking-header" onclick="toggleThinking(this)">
+                        <span class="arrow">▶</span>
+                        <span class="label">💭 思考过程</span>
+                        <span class="status">思考中...</span>
+                    </div>
+                    <div class="thinking-content"></div>
+                `;
+                container.insertBefore(thinkingBox, container.firstChild);
+            }
+            const content = thinkingBox.querySelector(".thinking-content");
+            const status = thinkingBox.querySelector(".status");
+            content.textContent = text;
+            if (finished) {
+                status.textContent = "已完成";
+                status.style.color = "#34a853";
+            } else {
+                status.textContent = "思考中...";
+                status.style.color = "#9aa0a6";
+            }
+        }
+
+        // 切换思考区域展开/折叠
+        function toggleThinking(header) {
+            const content = header.nextElementSibling;
+            const arrow = header.querySelector(".arrow");
+            content.classList.toggle("open");
+            arrow.classList.toggle("open");
+        }
+
+        // 更新回答区域
+        function updateAnswer(container, text) {
+            let answerBox = container.querySelector(".answer-box");
+            if (!answerBox) {
+                answerBox = document.createElement("div");
+                answerBox.className = "answer-box";
+                container.appendChild(answerBox);
+            }
+            answerBox.innerHTML = renderMarkdown(text);
         }
 
         function addMessage(role, text) {
@@ -629,7 +801,7 @@
             div.appendChild(bubble);
             chatContainer.appendChild(div);
             chatContainer.scrollTop = chatContainer.scrollHeight;
-            return bubble; // 返回 bubble 元素，供流式填充使用
+            return bubble;
         }
         function addStatus(text) {
             const div = document.createElement("div");

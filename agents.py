@@ -172,13 +172,26 @@ def analyze_image(image_path: str, user_question: str = "") -> str:
 
 ANSWER_SYSTEM_PROMPT = """你是一个智能助手，负责根据用户问题和所有参考资料生成准确、有帮助的回答。
 
-回答要求：
+你必须按照以下格式回答：
+
+<thinking>
+在这里写下你的思考过程：
+- 分析用户问题的核心意图
+- 评估可用的参考资料
+- 确定回答策略
+- 组织回答结构
+</thinking>
+
+<answer>
+在这里写下最终回答：
 - 综合所有提供的上下文（搜索结果、RAG文档、长期记忆、视觉分析结果）
 - 如果有图片分析结果，优先基于图片内容回答
 - 如果有搜索结果，请基于搜索结果回答，并在末尾标注信息来源
 - 如果有RAG文档，引用文档中的相关片段
 - 如果有对话历史，请结合上下文理解用户意图
-- 保持回答简洁、准确、有条理"""
+- 保持回答简洁、准确、有条理、格式美观
+- 使用 Markdown 格式（标题、列表、代码块等）让回答更易读
+</answer>"""
 
 
 def generate_answer(
@@ -190,7 +203,7 @@ def generate_answer(
     history_context: str = "",
 ) -> str:
     """
-    回答Agent：综合所有上下文生成最终回答。
+    回答Agent：综合所有上下文生成最终回答（非流式）。
 
     Args:
         user_question: 用户原始问题
@@ -223,3 +236,51 @@ def generate_answer(
         HumanMessage(content=user_message),
     ])
     return response.content
+
+
+async def generate_answer_stream(
+    user_question: str,
+    search_results: str = "",
+    rag_context: str = "",
+    long_term_memories: str = "",
+    image_analysis: str = "",
+    history_context: str = "",
+) -> AsyncGenerator[str, None]:
+    """
+    回答Agent：综合所有上下文生成最终回答（流式）。
+
+    Args:
+        user_question: 用户原始问题
+        search_results: 联网搜索结果
+        rag_context: RAG文档检索结果
+        long_term_memories: 长期记忆检索结果
+        image_analysis: 图片分析结果
+        history_context: 对话历史摘要
+
+    Yields:
+        str: 逐 token 的回答文本
+    """
+    from typing import AsyncGenerator
+    llm = _create_llm(temperature=0.3)
+    # 构建综合上下文
+    context_parts = [f"用户问题：{user_question}"]
+    if history_context:
+        context_parts.insert(0, f"对话历史：\n{history_context}")
+    if image_analysis:
+        context_parts.append(f"\n[图片分析结果]\n{image_analysis}")
+    if search_results:
+        context_parts.append(f"\n[联网搜索结果]\n{search_results}")
+    if rag_context:
+        context_parts.append(f"\n{rag_context}")
+    if long_term_memories:
+        context_parts.append(f"\n{long_term_memories}")
+
+    user_message = "\n\n".join(context_parts)
+    
+    # 使用流式 API
+    async for chunk in llm.astream([
+        SystemMessage(content=ANSWER_SYSTEM_PROMPT),
+        HumanMessage(content=user_message),
+    ]):
+        if hasattr(chunk, 'content'):
+            yield chunk.content
