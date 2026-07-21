@@ -11,6 +11,11 @@ export default defineConfig({
         target: "http://127.0.0.1:8000",
         changeOrigin: true,
       },
+      "/ws": {
+        target: "ws://127.0.0.1:8000",
+        ws: true,
+        changeOrigin: true,
+      },
       "/metrics": {
         target: "http://127.0.0.1:8000",
         changeOrigin: true,
@@ -20,5 +25,15 @@ export default defineConfig({
   build: {
     outDir: "dist",
     sourcemap: false,
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "vendor-react": ["react", "react-dom", "react-router-dom"],
+          "vendor-motion": ["framer-motion"],
+          "vendor-syntax": ["react-syntax-highlighter"],
+        },
+      },
+    },
   },
 });

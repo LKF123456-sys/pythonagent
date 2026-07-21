@@ -1,6 +1,6 @@
 # 多智能体对话系统
 
-基于 LangGraph 的多智能体 AI 对话系统，支持联网搜索、图片识别、文档检索、长期记忆、流式响应和 JWT 认证。
+基于 LangGraph 的生产就绪级多智能体 AI 对话系统，支持联网搜索、图片识别、RAG 文档检索、长期记忆、WebSocket 流式响应、JWT 认证和工业智造垂直领域。
 
 ## 功能特性
 
@@ -8,25 +8,27 @@
 
 - **联网搜索**：通过 Tavily API 实时搜索互联网信息
 - **图片识别**：使用本地 Ollama 多模态模型（qwen3-vl:8b）识别图片内容
-- **文档检索（RAG）**：上传文档到 ChromaDB 向量库，基于文档内容进行问答
+- **文档检索（RAG）**：上传文档到 pgvector 向量库，语义切片 + 向量相似度检索
 - **长期记忆**：自动存储对话历史，支持跨会话记忆检索
-- **流式响应**：SSE（Server-Sent Events）实时推送思考过程和回答
-- **思考过程可视化**：类似豆包专家版，显示 AI 的思考过程和最终回答
-- **JWT 认证**：用户注册、登录、会话管理
+- **WebSocket 流式响应**：双向实时通信，推送思考过程、节点状态和 token 流
+- **LLM 容错**：重试（指数退避）+ 熔断器 + 降级模型 + 令牌预算（成本熔断）
+- **JWT 双 Token 认证**：Access + Refresh Token，支持黑名单撤销
+- **工业智造垂直域**：故障诊断、工艺优化、预测性维护、知识问答
 - **Prometheus 监控**：内置业务指标和性能监控
+- **OpenTelemetry 追踪**：可选启用分布式链路追踪
 
 ### 智能路由
 
-系统通过调度主管自动判断问题类型，路由到不同的处理流程：
+系统通过调度主管（Supervisor）自动判断问题类型，路由到不同处理流程：
 
 - **SEARCH**：需要实时信息（天气、新闻、最新数据）→ 联网搜索
 - **RAG**：需要文档内容（用户上传的资料）→ 文档检索
 - **DIRECT**：常识、计算、翻译等 → 直接回答
 
-### 工作流架构
+### 工作流架构（LangGraph astream_events 原生流式）
 
 ```
-START → preprocess(预处理) → supervisor(调度主管) → [search|rag|direct] → answer(回答) → store_memory(记忆存储) → END
+START → preprocess → supervisor → [search|rag|direct] → answer → store_memory → END
 ```
 
 6 个核心节点：
@@ -34,35 +36,59 @@ START → preprocess(预处理) → supervisor(调度主管) → [search|rag|dir
 1. **preprocess**：图片识别、长期记忆检索、RAG 上下文准备
 2. **supervisor**：调度主管，判断路由（SEARCH/RAG/DIRECT）
 3. **search**：联网搜索（Tavily API）
-4. **rag**：文档检索（ChromaDB）
-5. **answer**：生成回答（DeepSeek API）
-6. **store_memory**：存储对话到长期记忆
+4. **rag**：文档检索（pgvector 向量相似度）
+5. **answer**：生成回答（DeepSeek API，流式 token）
+6. **store_memory**：存储对话到长期记忆向量库
+
+### 双管线架构
+
+```
+通用管线：preprocess → supervisor → search/rag → answer → store_memory
+工业管线：mfg_preprocess → mfg_supervisor → fault/process/predict/knowledge → mfg_answer → mfg_store
+```
+
+两条管线共享基础设施（Auth、WebSocket、Tracing、日志），业务逻辑完全隔离。
 
 ## 技术栈
 
 ### 后端
 
-- **FastAPI**：异步 Web 框架
-- **LangGraph**：多智能体编排框架
-- **LangChain**：LLM 应用开发工具链
-- **DeepSeek API**：主力 LLM（OpenAI 兼容接口）
-- **Ollama**：本地模型服务（视觉识别 + 嵌入）
-- **ChromaDB**：向量数据库（RAG + 长期记忆）
-- **Tavily**：联网搜索 API
-- **SQLite**：用户数据和会话存储
-- **JWT**：认证授权
+| 组件 | 技术 |
+|------|------|
+| Web 框架 | FastAPI（异步） |
+| 多智能体编排 | LangGraph + LangChain |
+| 主力 LLM | DeepSeek API（OpenAI 兼容） |
+| 本地模型 | Ollama（视觉 + 嵌入） |
+| 数据库 | PostgreSQL + asyncpg 连接池 |
+| 向量检索 | pgvector（768 维，cosine 距离） |
+| 联网搜索 | Tavily API |
+| 认证 | JWT（python-jose + bcrypt） |
+| 容错 | tenacity 重试 + 自研熔断器 |
+| 可观测性 | OpenTelemetry + Prometheus |
+| 日志 | 双输出（控制台 + 文件轮转）+ JSON 结构化 |
+| 配置 | pydantic-settings 类型安全 |
+| 频率限制 | slowapi |
 
 ### 前端
 
-- **React**：UI 框架
-- **TypeScript**：类型安全
-- **Vite**：构建工具
-- **Nginx**：生产环境静态文件托管
+| 组件 | 技术 |
+|------|------|
+| UI 框架 | React 18 |
+| 类型系统 | TypeScript |
+| 构建工具 | Vite |
+| 状态管理 | Zustand |
+| 路由 | React Router |
+| 动画 | Framer Motion |
+| Markdown | react-markdown + remark-gfm |
 
 ### 部署
 
-- **Docker**：容器化
-- **Docker Compose**：多服务编排
+| 组件 | 技术 |
+|------|------|
+| 容器化 | 多阶段 Docker（Node 构建前端 → Python 后端内嵌） |
+| 编排 | Docker Compose（app + PostgreSQL/pgvector） |
+| CI/CD | GitHub Actions（ruff → mypy → pytest → 前端构建） |
+| 代码质量 | ruff（lint）+ mypy（类型检查） |
 
 ## 快速开始
 
@@ -70,6 +96,7 @@ START → preprocess(预处理) → supervisor(调度主管) → [search|rag|dir
 
 - Python 3.11+
 - Node.js 20+（前端开发）
+- PostgreSQL 17 + pgvector 扩展（或使用 Docker Compose 自动提供）
 - Ollama（本地模型服务）
 - DeepSeek API Key
 - Tavily API Key
@@ -84,8 +111,8 @@ cd pythonagent/multi_agent_system
 ### 2. 安装依赖
 
 ```bash
-# 安装 Python 依赖
-pip install -r requirements.txt
+# 安装 Python 依赖到 libs 目录
+pip install -r requirements.txt --target libs
 
 # 安装前端依赖（可选）
 cd frontend
@@ -95,68 +122,48 @@ cd ..
 
 ### 3. 配置环境变量
 
-复制 `.env.example` 为 `.env` 并填写配置：
-
 ```bash
-# DeepSeek API（必需）
-OPENAI_API_KEY=your-deepseek-api-key
-OPENAI_BASE_URL=https://api.deepseek.com
-MODEL_NAME=deepseek-chat
-
-# Tavily 联网搜索（必需）
-TAVILY_API_KEY=your-tavily-api-key
-
-# 本地 Ollama 模型
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:7b
-OLLAMA_VISION_MODEL=qwen3-vl:8b
-OLLAMA_EMBED_MODEL=nomic-embed-text
-
-# JWT 认证（生产环境请替换为强随机密钥）
-JWT_SECRET_KEY=change-me-to-a-strong-random-secret-in-production
-JWT_ALGORITHM=HS256
-JWT_EXPIRE_MINUTES=1440
-
-# 数据库路径
-DATABASE_PATH=./data/app.db
-CHROMA_DB_PATH=./data/chroma_db
-
-# 日志配置
-LOG_LEVEL=INFO
-LOG_FILE=logs/app.log
-
-# CORS 配置
-CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173
+cp .env.example .env
+# 编辑 .env，填入真实的 API Key 和数据库连接信息
 ```
 
-### 4. 启动 Ollama 服务
+关键配置项：
+- `OPENAI_API_KEY`：DeepSeek API 密钥（必需）
+- `TAVILY_API_KEY`：Tavily 搜索密钥（必需）
+- `DATABASE_URL`：PostgreSQL 连接串
+- `JWT_SECRET_KEY`：强随机密钥（≥32 字符，否则拒绝启动）
+
+### 4. 启动数据库
 
 ```bash
-# 启动 Ollama 服务
+# 使用 Docker Compose 启动 PostgreSQL + pgvector
+docker compose up -d db
+```
+
+### 5. 启动 Ollama 并拉取模型
+
+```bash
 ollama serve
-
-# 拉取所需模型（首次运行）
-ollama pull qwen3-vl:8b      # 视觉识别模型
-ollama pull qwen2.5:7b       # 文本模型（可选）
-ollama pull nomic-embed-text # 嵌入模型（RAG + 长期记忆）
+ollama pull qwen3-vl:8b       # 视觉识别
+ollama pull nomic-embed-text   # 嵌入模型（RAG + 记忆）
 ```
 
-### 5. 启动后端服务
+### 6. 启动后端
 
 ```bash
-# 开发模式
-uvicorn web_app:app --host 127.0.0.1 --port 8000 --reload
+# 开发模式（需设置 PYTHONPATH 指向 libs）
+set PYTHONPATH=libs  # Windows
+# export PYTHONPATH=libs  # Linux/Mac
 
-# 生产模式
-uvicorn web_app:app --host 0.0.0.0 --port 8000 --workers 4
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 访问：
-- **Web 界面**：http://127.0.0.1:8000
-- **API 文档**：http://127.0.0.1:8000/docs
-- **监控指标**：http://127.0.0.1:8000/metrics
+- **Web 界面**：http://localhost:8000（前端构建后内嵌）
+- **API 文档**：http://localhost:8000/docs
+- **监控指标**：http://localhost:8000/metrics
 
-### 6. 启动前端（可选）
+### 7. 启动前端开发服务器（可选）
 
 ```bash
 cd frontend
@@ -165,255 +172,187 @@ npm run dev
 
 访问：http://localhost:5173
 
-## Docker 部署
-
-### 使用 Docker Compose（推荐）
+## Docker 一键部署
 
 ```bash
-# 构建并启动所有服务
-docker-compose up -d
+# 构建并启动所有服务（app + PostgreSQL）
+docker compose up -d --build
 
 # 查看日志
-docker-compose logs -f
+docker compose logs -f app
 
 # 停止服务
-docker-compose down
+docker compose down
 ```
 
-服务地址：
-- **后端 API**：http://localhost:8000
-- **前端界面**：http://localhost:3000
-
-### 单独构建镜像
-
-```bash
-# 构建后端镜像
-docker build -t agent-backend --target backend .
-
-# 构建前端镜像
-docker build -t agent-frontend ./frontend
-
-# 运行容器
-docker run -d -p 8000:8000 --env-file .env -v ./data:/app/data agent-backend
-docker run -d -p 3000:80 agent-frontend
-```
+单容器同时提供 API / WebSocket / 前端页面（同源 8000 端口，无需反向代理）。
 
 ## 项目结构
 
 ```
 multi_agent_system/
-├── agents.py              # 智能体定义（调度主管、搜索、视觉、回答）
-├── graph.py               # LangGraph 工作流编排
-├── web_app.py             # FastAPI 后端主程序
-├── auth.py                # JWT 认证模块
-├── database.py            # SQLite 数据库操作
-├── memory.py              # 长期记忆和 RAG 管理
-├── config.py              # 配置管理
-├── logger.py              # 日志模块
-├── main.py                # 命令行入口（可选）
-├── requirements.txt       # Python 依赖
-├── .env                   # 环境变量配置
-├── Dockerfile             # 后端 Docker 配置
-├── docker-compose.yml     # Docker Compose 编排
-├── API.md                 # API 文档
-├── README.md              # 项目文档（本文件）
-├── templates/
-│   └── index.html         # 内置 Web 界面
-├── frontend/              # React 前端项目
+├── app/                        # 后端分层架构
+│   ├── main.py                 # FastAPI 应用工厂 + lifespan
+│   ├── agents/                 # 多智能体编排
+│   │   ├── graph.py            # LangGraph 工作流（astream_events 流式）
+│   │   ├── nodes.py            # 节点实现（preprocess/supervisor/search/rag/answer）
+│   │   ├── llm.py              # LLM 创建（含容错包装）
+│   │   ├── resilience.py       # 重试 + 熔断器 + 降级 + 令牌预算
+│   │   ├── stream_parser.py    # 流式 token 解析器
+│   │   ├── prompts.py          # 系统提示词
+│   │   └── manufacturing/      # 工业智造垂直域
+│   │       ├── graph.py        # 工业管线工作流
+│   │       ├── nodes.py        # 工业节点（故障/工艺/预测/知识）
+│   │       ├── knowledge.py    # 工业知识库
+│   │       ├── tools.py        # 工业工具
+│   │       └── prompts.py      # 工业提示词
+│   ├── core/                   # 基础设施层
+│   │   ├── config.py           # pydantic-settings 配置
+│   │   ├── security.py         # JWT + bcrypt + 文件安全
+│   │   ├── exceptions.py       # AppException 异常层次
+│   │   ├── logging.py          # 结构化日志（双输出 + request_id）
+│   │   ├── tracing.py          # OpenTelemetry 追踪
+│   │   ├── rate_limit.py       # 频率限制
+│   │   ├── request_context.py  # 请求上下文（request_id 注入）
+│   │   └── constants.py        # 全局常量
+│   ├── db/                     # 数据访问层
+│   │   ├── connection.py       # asyncpg 连接池（pgvector 自动注册）
+│   │   └── migrations.py       # 版本化 SQL 迁移
+│   ├── memory/                 # 记忆与向量存储
+│   │   ├── vector_store.py     # pgvector 封装（长期记忆 + RAG）
+│   │   └── rag.py              # 语义切片
+│   ├── models/                 # Pydantic 数据模型
+│   ├── repositories/           # 数据仓库（SQL 操作）
+│   ├── routers/                # API 路由层
+│   │   ├── chat.py             # WebSocket 聊天
+│   │   ├── auth.py             # 认证
+│   │   ├── conversations.py    # 会话管理
+│   │   ├── documents.py        # RAG 文档
+│   │   ├── manufacturing.py    # 工业智造
+│   │   └── admin.py            # 管理后台
+│   └── services/               # 业务逻辑层
+├── frontend/                   # React 前端
 │   ├── src/
-│   │   ├── api/           # API 客户端
-│   │   ├── components/    # UI 组件
-│   │   ├── pages/         # 页面
-│   │   ├── store/         # 状态管理
-│   │   └── types.ts       # TypeScript 类型定义
-│   ├── package.json
-│   └── vite.config.ts
-├── tests/
-│   └── test_app.py        # 单元测试
-├── data/                  # 数据目录（自动创建）
-│   ├── app.db             # SQLite 数据库
-│   └── chroma_db/         # ChromaDB 向量库
-├── logs/                  # 日志目录（自动创建）
-│   └── app.log
-└── uploads/               # 上传文件目录（自动创建）
+│   │   ├── pages/              # 页面（Chat/Login/Admin/Knowledge/Manufacturing/Stats）
+│   │   ├── components/         # 组件
+│   │   ├── lib/                # API 客户端 + WebSocket
+│   │   ├── store/              # Zustand 状态管理
+│   │   └── types.ts            # TypeScript 类型
+│   └── package.json
+├── tests/                      # 测试（7 个测试文件）
+├── scripts/                    # 运维脚本（负载测试/DB检查/文档入库）
+├── .github/workflows/ci.yml   # CI/CD
+├── Dockerfile                  # 多阶段构建
+├── docker-compose.yml          # 服务编排
+├── requirements.txt            # Python 依赖
+├── ruff.toml                   # Lint 配置
+├── mypy.ini                    # 类型检查配置
+└── pytest.ini                  # 测试配置
 ```
 
 ## API 概览
 
-详细 API 文档请查看 [API.md](./API.md) 或访问 http://127.0.0.1:8000/docs
+详细 API 文档访问 http://localhost:8000/docs（Swagger UI）
 
-### 认证接口
+### 认证
 
 - `POST /api/auth/register` - 用户注册
-- `POST /api/auth/login` - 用户登录
-- `GET /api/auth/me` - 获取当前用户信息
+- `POST /api/auth/login` - 用户登录（返回 access + refresh token）
+- `POST /api/auth/refresh` - 刷新 Token
+- `GET /api/auth/me` - 当前用户信息
 
-### 会话接口
+### 聊天（WebSocket）
 
-- `GET /api/session` - 获取新会话 ID
-- `POST /api/session/new` - 创建新会话
-- `GET /api/conversations` - 获取历史会话列表
-- `GET /api/conversations/{id}/messages` - 获取会话消息
+- `WS /ws/chat?token=xxx` - WebSocket 双向聊天（推荐）
+- `POST /api/chat` - 非流式聊天（备用）
+
+### 会话管理
+
+- `GET /api/conversations` - 历史会话列表
+- `GET /api/conversations/{id}/messages` - 会话消息
 - `DELETE /api/conversations/{id}` - 删除会话
 
-### 聊天接口
+### RAG 文档
 
-- `POST /api/chat` - 非流式聊天
-- `POST /api/chat/stream` - SSE 流式聊天（推荐）
-
-### 上传接口
-
-- `POST /api/upload/image` - 上传图片
-- `POST /api/upload/document` - 上传文档到 RAG
-
-### 文档接口
-
-- `GET /api/documents` - 获取文档列表
+- `POST /api/documents/upload` - 上传文档到知识库
+- `GET /api/documents` - 文档列表
 - `DELETE /api/documents/{filename}` - 删除文档
 
-### 系统接口
+### 工业智造
 
-- `GET /api/health` - 健康检查
-- `GET /metrics` - Prometheus 监控指标
+- `WS /ws/manufacturing?token=xxx` - 工业 WebSocket 聊天
+- `POST /api/manufacturing/knowledge/upload` - 工业知识入库
 
-## 使用示例
+### 系统
 
-### 注册并登录
-
-```bash
-# 注册
-curl -X POST http://127.0.0.1:8000/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"username": "demo", "password": "demo123"}'
-
-# 登录（获取 token）
-curl -X POST http://127.0.0.1:8000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "demo", "password": "demo123"}'
-```
-
-### 流式聊天
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/chat/stream \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "今天北京天气怎么样？",
-    "session_id": "test-session-1",
-    "is_first_turn": true
-  }'
-```
-
-### 上传图片并识别
-
-```bash
-# 1. 上传图片
-curl -X POST http://127.0.0.1:8000/api/upload/image \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -F "image=@screenshot.png"
-
-# 2. 使用返回的 filename 进行聊天
-curl -X POST http://127.0.0.1:8000/api/chat/stream \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "这张图片里有什么？",
-    "session_id": "test-session-2",
-    "image_filename": "screenshot_1234567890.png",
-    "is_first_turn": true
-  }'
-```
-
-### 上传文档到 RAG
-
-```bash
-# 1. 上传文档
-curl -X POST http://127.0.0.1:8000/api/upload/document \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -F "document=@manual.pdf"
-
-# 2. 基于文档内容问答
-curl -X POST http://127.0.0.1:8000/api/chat/stream \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "根据文档，如何配置系统？",
-    "session_id": "test-session-3",
-    "is_first_turn": true
-  }'
-```
-
-## 配置说明
-
-### 模型配置
-
-- **主力 LLM**：DeepSeek API（`deepseek-chat`），用于调度主管和回答生成
-- **视觉模型**：Ollama `qwen3-vl:8b`，用于图片识别
-- **嵌入模型**：Ollama `nomic-embed-text`，用于 RAG 和长期记忆的向量化
-
-### 记忆配置
-
-- **短期记忆**：保留最近 10 轮对话（`MAX_HISTORY_TURNS`）
-- **长期记忆**：每次检索最多召回 5 条（`LONG_TERM_TOP_K`）
-
-### 上传限制
-
-- **图片**：png, jpg, jpeg, gif, bmp, webp
-- **文档**：txt, md, csv, json, pdf, html, py, java, js, ts
-- **最大文件大小**：20MB
-
-## 监控指标
-
-系统内置 Prometheus 监控指标：
-
-- `agent_requests_total`：智能体路由决策总数（按类型）
-- `llm_response_duration_seconds`：LLM 调用耗时（按智能体）
-- `rag_chunks_stored_total`：RAG 文档切片存储总数
-
-访问 http://127.0.0.1:8000/metrics 获取指标数据。
+- `GET /api/health` - 健康检查（聚合 PG/pgvector/Ollama/LLM 状态）
+- `GET /metrics` - Prometheus 指标
 
 ## 测试
 
 ```bash
-# 运行单元测试
-pytest tests/
+# 需要 PostgreSQL 测试实例
+docker compose -f docker-compose.test.yml up -d
 
-# 运行测试并显示覆盖率
-pytest tests/ --cov=. --cov-report=term-missing
+# 运行全部测试
+pytest tests/ -q
+
+# 运行单个测试文件
+pytest tests/test_auth.py -v
 ```
+
+测试覆盖：认证流程、聊天流、文档上传、图编排、LLM 容错、WebSocket。
+
+## 配置说明
+
+### LLM 容错配置
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| LLM_MAX_RETRIES | 3 | 瞬时错误最大重试次数 |
+| LLM_CIRCUIT_FAILURE_THRESHOLD | 5 | 连续失败多少次后熔断 |
+| LLM_CIRCUIT_RECOVERY_TIMEOUT | 60 | 熔断冷却秒数 |
+| LLM_TOKEN_BUDGET_PER_MINUTE | 0 | 每分钟 token 预算（0=不限） |
+| FALLBACK_MODEL_NAME | 空 | 降级模型名（空=不启用） |
+
+### 上传限制
+
+- **图片**：png, jpg, jpeg, gif, bmp, webp
+- **文档**：txt, md, csv, json, pdf, docx, html, py, java, js, ts
+- **最大文件大小**：20MB
 
 ## 常见问题
 
-### Q: Ollama 服务无法连接？
+### Q: 启动报 ModuleNotFoundError？
 
-A: 确保 Ollama 服务已启动：
+A: 项目依赖安装在 `libs/` 目录，需设置 `PYTHONPATH=libs` 或使用虚拟环境。
+
+### Q: JWT_SECRET_KEY 校验失败？
+
+A: 密钥必须 ≥32 字符且不含弱占位符。生成强密钥：
 ```bash
-ollama serve
+python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-### Q: 图片识别失败？
+### Q: pgvector 不可用？
 
-A: 检查是否已拉取视觉模型：
-```bash
-ollama pull qwen3-vl:8b
+A: 确保 PostgreSQL 已安装 vector 扩展：
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
 ```
+Docker Compose 使用的 `pgvector:pg17` 镜像已内置。
 
 ### Q: RAG 检索不到内容？
 
-A: 确保已上传文档并等待嵌入完成。检查 ChromaDB 路径是否正确。
+A: 确保 Ollama 已启动且 `nomic-embed-text` 模型已拉取。嵌入失败时文档不会入库。
 
-### Q: 如何更换 LLM 模型？
+### Q: 如何更换 LLM？
 
 A: 修改 `.env` 中的 `MODEL_NAME` 和 `OPENAI_BASE_URL`，支持任何 OpenAI 兼容接口。
 
 ## 许可证
 
 MIT License
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！
 
 ## 联系方式
 

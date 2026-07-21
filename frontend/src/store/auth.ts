@@ -1,50 +1,74 @@
-// 认证状态管理（zustand）
+// 认证状态管理（Zustand）
 import { create } from "zustand";
-import * as api from "../api/client";
+import * as api from "../lib/api";
+import type { UserInfo } from "../types";
 
 interface AuthState {
-  token: string | null;
-  username: string | null;
-  userId: number | null;
+  user: UserInfo | null;
   isAuthenticated: boolean;
+  loading: boolean;
   login: (username: string, password: string) => Promise<void>;
   register: (username: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
+  hydrate: () => Promise<void>;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
-  token: api.getToken(),
-  username: localStorage.getItem("agent_username"),
-  userId: null,
-  isAuthenticated: !!api.getToken(),
+  user: null,
+  isAuthenticated: !!api.getAccessToken(),
+  loading: false,
 
   login: async (username, password) => {
-    const res = await api.login(username, password);
-    api.setToken(res.access_token);
-    localStorage.setItem("agent_username", res.username);
+    const data = await api.login(username, password);
+    api.setTokens(data.access_token, data.refresh_token);
     set({
-      token: res.access_token,
-      username: res.username,
-      userId: res.user_id,
       isAuthenticated: true,
+      user: {
+        user_id: data.user_id,
+        username: data.username,
+        is_admin: data.is_admin,
+        created_at: "",
+      },
     });
   },
 
   register: async (username, password) => {
-    const res = await api.register(username, password);
-    api.setToken(res.access_token);
-    localStorage.setItem("agent_username", res.username);
+    const data = await api.register(username, password);
+    api.setTokens(data.access_token, data.refresh_token);
     set({
-      token: res.access_token,
-      username: res.username,
-      userId: res.user_id,
       isAuthenticated: true,
+      user: {
+        user_id: data.user_id,
+        username: data.username,
+        is_admin: data.is_admin,
+        created_at: "",
+      },
     });
   },
 
-  logout: () => {
-    api.clearToken();
-    localStorage.removeItem("agent_username");
-    set({ token: null, username: null, userId: null, isAuthenticated: false });
+  logout: async () => {
+    const refresh = api.getRefreshToken() ?? undefined;
+    try {
+      await api.logout(refresh);
+    } catch {
+      // 即使后端登出失败也清除本地凭证
+    }
+    api.clearTokens();
+    set({ user: null, isAuthenticated: false });
+  },
+
+  hydrate: async () => {
+    if (!api.getAccessToken()) {
+      set({ isAuthenticated: false, user: null });
+      return;
+    }
+    set({ loading: true });
+    try {
+      const me = await api.fetchMe();
+      set({ user: me, isAuthenticated: true, loading: false });
+    } catch {
+      api.clearTokens();
+      set({ user: null, isAuthenticated: false, loading: false });
+    }
   },
 }));

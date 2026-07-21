@@ -1,113 +1,139 @@
-import { useRef, useState, KeyboardEvent } from "react";
-import * as api from "../api/client";
+// 输入区：自适应高度 textarea + 图片上传预览 + 发送/停止生成
+import { useEffect, useRef, useState } from "react";
+import * as api from "../lib/api";
+import { useChatStore } from "../store/chat";
+import { IconImage, IconSend, IconStop, IconX } from "./icons";
+import { toast } from "../lib/toast";
 
-interface Props {
-  disabled: boolean;
-  onSend: (question: string, imageFilename: string) => void;
-  onDocUploaded: (filename: string, chunks: number) => void;
-}
-
-// 底部输入区：文本输入 + 图片上传 + 文档上传（RAG）
-export default function ChatInput({ disabled, onSend, onDocUploaded }: Props) {
+export function ChatInput() {
   const [text, setText] = useState("");
-  const [imageFilename, setImageFilename] = useState("");
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string>("");
+  const [imageServerName, setImageServerName] = useState<string>("");
   const [uploading, setUploading] = useState(false);
-  const imageInputRef = useRef<HTMLInputElement>(null);
-  const docInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  function submit() {
-    const q = text.trim();
-    if (!q || disabled) return;
-    onSend(q, imageFilename);
+  const streaming = useChatStore((s) => s.streaming);
+  const sendMessage = useChatStore((s) => s.sendMessage);
+  const abort = useChatStore((s) => s.abort);
+
+  // 自适应高度
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 160) + "px";
+  }, [text]);
+
+  const pickImage = (file: File) => {
+    if (!file.type.startsWith("image/")) {
+      toast("仅支持图片文件", "error");
+      return;
+    }
+    setImageFile(file);
+    setImagePreview(URL.createObjectURL(file));
+    // 立即上传到后端，发送时仅传 filename
+    setUploading(true);
+    api
+      .uploadImage(file)
+      .then((filename) => {
+        setImageServerName(filename);
+        setUploading(false);
+      })
+      .catch((e) => {
+        setUploading(false);
+        setImageFile(null);
+        setImagePreview("");
+        toast(`图片上传失败：${api.errDetail(e)}`, "error");
+      });
+  };
+
+  const clearImage = () => {
+    if (imagePreview) URL.revokeObjectURL(imagePreview);
+    setImageFile(null);
+    setImagePreview("");
+    setImageServerName("");
+  };
+
+  const submit = () => {
+    const question = text.trim();
+    if (!question || streaming) return;
+    if (imageFile && (!imageServerName || uploading)) {
+      toast("图片仍在上传，请稍候", "info");
+      return;
+    }
+    sendMessage(question, imageServerName || undefined);
     setText("");
-    setImageFilename("");
-  }
+    clearImage();
+    textareaRef.current?.focus();
+  };
 
-  function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       submit();
     }
-  }
-
-  async function handleImage(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try {
-      const filename = await api.uploadImage(file);
-      setImageFilename(filename);
-    } catch (err) {
-      alert("图片上传失败");
-    } finally {
-      setUploading(false);
-      if (imageInputRef.current) imageInputRef.current.value = "";
-    }
-  }
-
-  async function handleDoc(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try {
-      const res = await api.uploadDocument(file);
-      onDocUploaded(res.filename, res.chunks);
-    } catch (err) {
-      alert("文档上传失败");
-    } finally {
-      setUploading(false);
-      if (docInputRef.current) docInputRef.current.value = "";
-    }
-  }
+  };
 
   return (
-    <div className="input-area">
-      <div className="input-inner">
-        <div className="toolbar">
-          <button
-            className="tool-btn"
-            onClick={() => imageInputRef.current?.click()}
-            disabled={uploading}
-          >
-            📷 图片
-          </button>
-          <button
-            className="tool-btn"
-            onClick={() => docInputRef.current?.click()}
-            disabled={uploading}
-          >
-            📄 文档(RAG)
-          </button>
-          {imageFilename && <span className="attach-tag">已附加图片：{imageFilename}</span>}
-          {uploading && <span className="attach-tag">上传中…</span>}
-          <input
-            ref={imageInputRef}
-            type="file"
-            accept="image/*"
-            style={{ display: "none" }}
-            onChange={handleImage}
-          />
-          <input
-            ref={docInputRef}
-            type="file"
-            accept=".txt,.md,.csv,.json,.pdf,.html,.py,.java,.js,.ts"
-            style={{ display: "none" }}
-            onChange={handleDoc}
-          />
+    <div className="composer">
+      {(imageFile || uploading) && (
+        <div className="composer-attachments">
+          <div className="attach-chip">
+            {imagePreview ? <img src={imagePreview} alt="预览" /> : <span className="spinner" />}
+            <span>{imageFile?.name ?? "上传中…"}</span>
+            {uploading && <span style={{ color: "var(--text-3)" }}>上传中</span>}
+            {!uploading && imageServerName && <span style={{ color: "var(--green)" }}>✓</span>}
+            <button className="btn-icon" style={{ width: 20, height: 20 }} onClick={clearImage}>
+              <IconX style={{ width: 12, height: 12 }} />
+            </button>
+          </div>
         </div>
+      )}
 
-        <div className="input-row">
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-            rows={1}
-          />
-          <button className="send-btn" onClick={submit} disabled={disabled || !text.trim()}>
-            发送
+      <div className="composer-box">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) pickImage(f);
+            e.target.value = "";
+          }}
+        />
+        <button
+          className="btn-icon"
+          title="附加图片（视觉分析）"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={streaming}
+        >
+          <IconImage style={{ width: 18, height: 18 }} />
+        </button>
+        <textarea
+          ref={textareaRef}
+          rows={1}
+          value={text}
+          placeholder="输入问题，Enter 发送，Shift+Enter 换行…"
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={onKeyDown}
+        />
+        {streaming ? (
+          <button className="send-btn stop" onClick={abort} title="停止生成">
+            <IconStop />
           </button>
-        </div>
+        ) : (
+          <button className="send-btn" onClick={submit} disabled={!text.trim()} title="发送">
+            <IconSend />
+          </button>
+        )}
+      </div>
+
+      <div className="composer-hint">
+        <span>多智能体协同 · 路由 / 搜索 / RAG / 记忆</span>
+        <span>{text.length > 0 ? `${text.length} 字` : "v2.0"}</span>
       </div>
     </div>
   );

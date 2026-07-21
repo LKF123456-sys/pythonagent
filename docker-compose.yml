@@ -1,47 +1,58 @@
 # 多智能体对话系统 - Docker Compose 编排
-# 后端（FastAPI）+ 前端（Nginx 托管 React 静态文件）
+# 单容器后端 + PostgreSQL（pgvector）数据库
+# 后端（FastAPI）内嵌前端静态资源，同端口（8000）提供
+# 页面 / REST API / WebSocket，同源访问，无需反向代理。
 
 services:
-  # ============================================================
-  # 后端服务（FastAPI + uvicorn）
-  # ============================================================
-  backend:
+  db:
+    image: registry.cn-hangzhou.aliyuncs.com/jeecgdocker/pgvector:pg17
+    container_name: agent-db
+    environment:
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: agent-local
+      POSTGRES_DB: agent
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  app:
     build:
       context: .
       dockerfile: Dockerfile
-      target: backend
-    container_name: agent-backend
+      args:
+        NODE_ENV: production
+    container_name: agent-app
     ports:
       - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    # 敏感配置通过运行时注入（替代旧 Dockerfile 的 COPY .env，避免密钥进镜像）
     env_file:
       - .env
     environment:
-      - DATABASE_PATH=/app/data/app.db
-      - CHROMA_DB_PATH=/app/data/chroma_db
-      - CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+      - DATABASE_URL=postgresql://agent:agent-local@db:5432/agent
+      - UPLOAD_FOLDER=/app/uploads
+      - LOG_FILE=/app/logs/app.log
+      - CORS_ORIGINS=http://localhost:8000,http://localhost:3000,http://localhost:5173
     volumes:
-      - ./data:/app/data          # SQLite + ChromaDB 持久化
       - ./logs:/app/logs          # 日志持久化
       - ./uploads:/app/uploads    # 上传文件持久化
     restart: unless-stopped
+    # 深度健康检查：仅当 /api/health 聚合状态为 unhealthy 时判定不健康
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/api/health').raise_for_status()"]
+      test: ["CMD", "python", "-c", "import httpx,sys; r=httpx.get('http://localhost:8000/api/health',timeout=5); r.raise_for_status(); sys.exit(1 if r.json().get('status')=='unhealthy' else 0)"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 20s
 
-  # ============================================================
-  # 前端服务（Nginx 托管 React 构建产物）
-  # ============================================================
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: agent-frontend
-    ports:
-      - "3000:80"
-    depends_on:
-      backend:
-        condition: service_healthy
-    restart: unless-stopped
+volumes:
+  pgdata:

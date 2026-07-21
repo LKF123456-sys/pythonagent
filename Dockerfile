@@ -1,49 +1,58 @@
-# 多智能体对话系统 - 后端 Dockerfile
-# 基于 Python 3.11 slim，多阶段构建
+# 多智能体对话系统 - 单容器部署 Dockerfile
+# 多阶段构建：前端（Node 构建静态资源）→ 后端（Python + 内嵌前端，单端口提供全部服务）
+#
+# 安全说明：
+#   - 不 COPY .env 进镜像（敏感配置通过运行时 env_file / environment 注入）
+#   - 应用启动时会校验 JWT_SECRET_KEY，弱密钥直接拒绝启动
 
 # ============================================================
-# 阶段1：构建前端（如果有 Node.js 前端项目）
+# 阶段1：构建前端静态资源
 # ============================================================
 FROM node:20-alpine AS frontend-builder
 
-WORKDIR /app/frontend
+ARG NODE_ENV=production
+ENV NODE_ENV=${NODE_ENV}
+
+WORKDIR /build
 COPY frontend/package*.json ./
-RUN npm ci --production=false
+RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
 # ============================================================
-# 阶段2：Python 后端
+# 阶段2：Python 后端（内嵌前端静态资源）
 # ============================================================
 FROM python:3.11-slim AS backend
 
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
-# 系统依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
+# 编译依赖（部分 Python 包需要 gcc）
+RUN apt-get update && apt-get install -y --no-install-recommends gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装 Python 依赖
+# 先安装依赖（独立成层，充分利用 Docker 构建缓存）
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 复制后端代码
-COPY config.py logger.py database.py auth.py agents.py graph.py memory.py web_app.py main.py ./
-COPY .env .env
+# 复制后端代码（新分层架构 app/ 包 + 启动入口）
+COPY app/ ./app/
+COPY main.py .
 
-# 复制前端构建产物（可选，如果不需要 Nginx 托管）
-# COPY --from=frontend-builder /app/frontend/dist ./static
+# 复制前端构建产物：app/main.py 的 _mount_frontend 会从 frontend/dist 挂载
+# 使单容器即可同时提供 API / WebSocket / 前端页面（同源，无需反向代理）
+COPY --from=frontend-builder /build/dist ./frontend/dist
 
-# 创建数据目录
-RUN mkdir -p data logs uploads
+# 运行时日志 / 上传目录（建议通过 volume 持久化）
+RUN mkdir -p logs uploads
 
-# 暴露端口
 EXPOSE 8000
 
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8000/api/health').raise_for_status()"
+# 深度健康检查：/api/health 聚合 PostgreSQL/pgvector/Ollama/LLM 状态，
+# 仅当整体 status 为 unhealthy（关键组件数据库故障）时判定容器不健康
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD python -c "import httpx,sys; r=httpx.get('http://localhost:8000/api/health',timeout=5); r.raise_for_status(); sys.exit(1 if r.json().get('status')=='unhealthy' else 0)"
 
-# 启动命令
-CMD ["uvicorn", "web_app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,137 +1,129 @@
-import { useEffect, useState, useCallback, useRef } from "react";
-import Sidebar from "../components/Sidebar";
-import MessageList from "../components/MessageList";
-import ChatInput from "../components/ChatInput";
-import * as api from "../api/client";
-import type { Conversation, Message } from "../types";
+// 聊天主页面：侧边栏 + 消息流 + 节点流水线 + 输入区
+import { useEffect, useMemo, useRef } from "react";
+import { useChatStore } from "../store/chat";
+import { useAuthStore } from "../store/auth";
+import { Sidebar } from "../components/Sidebar";
+import { MessageBubble } from "../components/MessageBubble";
+import { NodePipeline } from "../components/NodePipeline";
+import { ChatInput } from "../components/ChatInput";
+import type { WSStatus } from "../lib/ws";
 
-// 生成 8 位随机会话 id（与后端 uuid[:8] 风格一致）
-function genSessionId(): string {
-  return Math.random().toString(36).slice(2, 10);
-}
+const WS_STATUS_TEXT: Record<WSStatus, string> = {
+  connecting: "连接中",
+  open: "实时通道",
+  closed: "未连接",
+  reconnecting: "重连中",
+};
 
-// 主聊天页面
+const SUGGESTIONS = [
+  "帮我搜索一下 LangGraph 的最新进展",
+  "用 RAG 检索知识库里关于部署的说明",
+  "解释一下什么是多智能体系统，并举个例子",
+  "计算 (128 * 256) / 3 的结果",
+];
+
 export default function Chat() {
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeId, setActiveId] = useState<string>(genSessionId());
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [streaming, setStreaming] = useState("");
-  const [statusNode, setStatusNode] = useState("");
-  const [isStreaming, setIsStreaming] = useState(false);
-  const isFirstTurnRef = useRef(true);
+  const user = useAuthStore((s) => s.user);
+  const conversations = useChatStore((s) => s.conversations);
+  const currentSessionId = useChatStore((s) => s.currentSessionId);
+  const messages = useChatStore((s) => s.messages);
+  const messagesLoading = useChatStore((s) => s.messagesLoading);
+  const streaming = useChatStore((s) => s.streaming);
+  const stream = useChatStore((s) => s.stream);
+  const pipeline = useChatStore((s) => s.pipeline);
+  const wsStatus = useChatStore((s) => s.wsStatus);
+  const loadConversations = useChatStore((s) => s.loadConversations);
+  const sendMessage = useChatStore((s) => s.sendMessage);
 
-  // 加载历史会话列表
-  const refreshConversations = useCallback(async () => {
-    try {
-      const convs = await api.listConversations();
-      setConversations(convs);
-    } catch {
-      /* 忽略 */
-    }
-  }, []);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    refreshConversations();
-  }, [refreshConversations]);
+    void loadConversations();
+  }, [loadConversations]);
 
-  // 选择一个历史会话，加载其消息
-  async function handleSelect(id: string) {
-    if (id === activeId) return;
-    setActiveId(id);
-    setStreaming("");
-    setStatusNode("");
-    try {
-      const msgs = await api.getMessages(id);
-      setMessages(msgs);
-      isFirstTurnRef.current = msgs.length === 0;
-    } catch {
-      setMessages([]);
+  // 消息/流式内容变化时自动滚动到底部
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages, stream?.answer, stream?.thinking, messagesLoading]);
+
+  const currentTitle = useMemo(() => {
+    const conv = conversations.find((c) => c.session_id === currentSessionId);
+    return conv?.title || "新的对话";
+  }, [conversations, currentSessionId]);
+
+  const regenerate = () => {
+    // 找到最后一条用户消息重新发送
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") {
+        sendMessage(messages[i].content);
+        return;
+      }
     }
-  }
+  };
 
-  // 新建对话
-  function handleNew() {
-    setActiveId(genSessionId());
-    setMessages([]);
-    setStreaming("");
-    setStatusNode("");
-    isFirstTurnRef.current = true;
-  }
-
-  // 删除对话
-  async function handleDelete(id: string) {
-    if (!confirm("确定删除该对话？")) return;
-    await api.deleteConversation(id);
-    if (id === activeId) handleNew();
-    await refreshConversations();
-  }
-
-  // 发送消息（流式）
-  async function handleSend(question: string, imageFilename: string) {
-    setMessages((prev) => [...prev, { role: "user", content: question }]);
-    setStreaming("");
-    setStatusNode("");
-    setIsStreaming(true);
-
-    let acc = "";
-    try {
-      await api.chatStream(
-        {
-          question,
-          sessionId: activeId,
-          imageFilename,
-          isFirstTurn: isFirstTurnRef.current,
-        },
-        (event) => {
-          if (event.type === "status") {
-            setStatusNode(event.node);
-          } else if (event.type === "token") {
-            acc += event.content;
-            setStreaming(acc);
-          } else if (event.type === "error") {
-            acc += `\n\n⚠️ 出错：${event.error}`;
-            setStreaming(acc);
-          }
-        }
-      );
-    } catch (err: any) {
-      acc += `\n\n⚠️ 请求失败：${err?.message || err}`;
-    } finally {
-      setMessages((prev) => [...prev, { role: "assistant", content: acc }]);
-      setStreaming("");
-      setStatusNode("");
-      setIsStreaming(false);
-      isFirstTurnRef.current = false;
-      // 首轮结束后刷新会话列表（后端已落库）
-      refreshConversations();
-    }
-  }
-
-  function handleDocUploaded(filename: string, chunks: number) {
-    setMessages((prev) => [
-      ...prev,
-      { role: "assistant", content: `📄 已将文档 **${filename}** 加入知识库（${chunks} 个切片），现在可以就其内容提问。` },
-    ]);
-  }
+  const wsDotClass =
+    wsStatus === "open" ? "dot-green" : wsStatus === "connecting" || wsStatus === "reconnecting" ? "dot-amber" : "dot-muted";
 
   return (
-    <div className="app-layout">
-      <Sidebar
-        conversations={conversations}
-        activeId={activeId}
-        onSelect={handleSelect}
-        onNew={handleNew}
-        onDelete={handleDelete}
-      />
-      <div className="chat-main">
-        <MessageList
-          messages={messages}
-          streaming={streaming}
-          statusNode={statusNode}
-          isStreaming={isStreaming}
-        />
-        <ChatInput disabled={isStreaming} onSend={handleSend} onDocUploaded={handleDocUploaded} />
-      </div>
+    <div className="chat-layout">
+      <Sidebar />
+
+      <main className="chat-main">
+        <div className="chat-header">
+          <div className="chat-header-title">{currentTitle}</div>
+          <div className="ws-indicator">
+            <span className={`dot ${wsDotClass}`} />
+            {WS_STATUS_TEXT[wsStatus]}
+          </div>
+        </div>
+
+        <NodePipeline stages={pipeline} visible={streaming || pipeline.length > 0} />
+
+        <div className="messages" ref={scrollRef}>
+          {messages.length === 0 && !streaming && !messagesLoading ? (
+            <div className="empty-state">
+              <div className="empty-glyph">N·</div>
+              <div className="empty-title">向 Nexus 编队提问</div>
+              <div className="empty-sub">Supervisor 会自动路由到搜索、知识库或直接回答</div>
+              <div className="empty-chips">
+                {SUGGESTIONS.map((s) => (
+                  <button key={s} className="empty-chip" onClick={() => sendMessage(s)}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <>
+              {messagesLoading && (
+                <div style={{ display: "grid", placeItems: "center", padding: 40 }}>
+                  <span className="spinner" />
+                </div>
+              )}
+              {messages.map((m, i) => (
+                <MessageBubble
+                  key={i}
+                  message={m}
+                  username={user?.username}
+                  isLast={i === messages.length - 1}
+                  onRegenerate={regenerate}
+                />
+              ))}
+              {streaming && stream && (
+                <MessageBubble
+                  message={{ role: "assistant", content: stream.answer }}
+                  streaming
+                  thinking={stream.thinking}
+                  username={user?.username}
+                />
+              )}
+            </>
+          )}
+        </div>
+
+        <ChatInput />
+      </main>
     </div>
   );
 }

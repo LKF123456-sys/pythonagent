@@ -1,74 +1,81 @@
 """
-主入口：多智能体系统的启动。
+主入口：多智能体系统的启动（新分层架构）。
 支持命令行模式（交互式）和 Web 模式（FastAPI + uvicorn）。
+
+Web 模式指向 app.main:app（新架构应用工厂）。
+CLI 模式直接调用 app.agents.graph.run_agent。
 """
 
+import asyncio
 import sys
-import os
 import uuid
-
-# 将本地 libs 目录加入 Python 搜索路径（可选 fallback）
-_LIBS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "libs")
-if os.path.isdir(_LIBS_DIR):
-    sys.path.insert(0, _LIBS_DIR)
-
-from config import Config
-from logger import setup_logger
-from graph import run_agent
 
 
 def main_cli() -> None:
     """命令行模式：交互式多轮对话。"""
+    from app.core.config import get_settings
+    from app.core.logging import setup_logger
+    from app.agents.graph import run_agent
+    from app.agents.runtime import set_vector_store
+    from app.memory.vector_store import VectorStore
+
+    settings = get_settings()
     try:
-        Config.validate()
+        settings.validate_security()
+        settings.validate_required()
     except ValueError as e:
         print(f"\n[配置错误] {e}")
         sys.exit(1)
 
-    logger = setup_logger("main", Config.LOG_LEVEL, Config.LOG_FILE)
+    logger = setup_logger("main")
     logger.info("多智能体系统启动（命令行模式）")
 
-    thread_id = str(uuid.uuid4())[:8]
-    print(f"\n系统就绪。会话ID: {thread_id}")
-    print("输入 'quit' 或 'exit' 退出，输入 'new' 开始新对话。\n")
+    # CLI 模式初始化向量库（记忆 / RAG 节点依赖）
+    set_vector_store(VectorStore())
 
-    while True:
-        try:
-            user_input = input(">>> 请输入问题: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\n再见！")
-            break
+    async def _loop() -> None:
+        thread_id = str(uuid.uuid4())[:8]
+        print(f"\n系统就绪。会话ID: {thread_id}")
+        print("输入 'quit' 或 'exit' 退出，输入 'new' 开始新对话。\n")
 
-        if user_input.lower() in ("quit", "exit", "q"):
-            print("再见！")
-            break
+        while True:
+            try:
+                user_input = input(">>> 请输入问题: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n再见！")
+                break
 
-        if user_input.lower() == "new":
-            thread_id = str(uuid.uuid4())[:8]
-            print(f"\n新对话已开始！会话ID: {thread_id}\n")
-            continue
+            if user_input.lower() in ("quit", "exit", "q"):
+                print("再见！")
+                break
 
-        if not user_input:
-            continue
+            if user_input.lower() == "new":
+                thread_id = str(uuid.uuid4())[:8]
+                print(f"\n新对话已开始！会话ID: {thread_id}\n")
+                continue
 
-        try:
-            answer = run_agent(user_input, thread_id=thread_id)
-            print(f"\n{'=' * 60}")
-            print(f"[最终回答]\n{answer}")
-            print(f"{'=' * 60}\n")
-        except Exception as e:
-            logger.error("运行错误: %s", e, exc_info=True)
-            print(f"\n[运行错误] {e}\n")
+            if not user_input:
+                continue
+
+            try:
+                answer = await run_agent(user_input, thread_id=thread_id)
+                print(f"\n{'=' * 60}")
+                print(f"[最终回答]\n{answer}")
+                print(f"{'=' * 60}\n")
+            except Exception as e:
+                logger.error("运行错误: %s", e, exc_info=True)
+                print(f"\n[运行错误] {e}\n")
+
+    asyncio.run(_loop())
 
 
 def main_web() -> None:
-    """Web 模式：启动 FastAPI 服务。"""
+    """Web 模式：启动 FastAPI 服务（新架构 app.main:app）。"""
     import uvicorn
-    try:
-        Config.validate()
-    except ValueError as e:
-        print(f"\n[配置错误] {e}")
-        sys.exit(1)
+
+    from app.core.config import get_settings
+
+    settings = get_settings()
 
     print("\n" + "=" * 60)
     print("  多智能体对话系统 v2.0（FastAPI 异步版）")
@@ -78,11 +85,11 @@ def main_web() -> None:
     print("=" * 60 + "\n")
 
     uvicorn.run(
-        "web_app:app",
+        "app.main:app",
         host="127.0.0.1",
         port=8000,
         reload=False,
-        log_level=Config.LOG_LEVEL.lower(),
+        log_level=settings.LOG_LEVEL.lower(),
     )
 
 

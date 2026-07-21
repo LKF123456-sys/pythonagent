@@ -1,0 +1,27 @@
+# Ruff 配置：聚焦高信号规则，排除 vendored 依赖目录
+line-length = 120
+target-version = "py311"
+
+# 排除 vendored 依赖与虚拟环境（libs/ 未纳入 git，但本地可能存在）
+extend-exclude = ["libs", ".venv", "venv", "frontend", "data", "logs", "uploads"]
+
+[lint]
+select = [
+    "E",   # pycodestyle 错误
+    "F",   # pyflakes（未使用导入/变量等）
+    "W",   # pycodestyle 警告
+]
+ignore = [
+    "E501",  # 行过长（由 line-length + 格式化工具约束）
+    "E402",  # 模块级导入不在顶部（conftest 需先设置环境变量再导入 app）
+    "E731",  # lambda 赋值
+    "F403",  # star 导入
+    "F405",  # star 导入名称使用
+    "F811",  # 重复定义（pytest fixture 场景）
+]
+
+[lint.per-file-ignores]
+# __init__.py 允许仅做再导出的导入
+"__init__.py" = ["F401"]
+# 测试文件放宽：允许未使用导入（fixture 注入）与断言
+"tests/*" = ["F401", "F841"]
