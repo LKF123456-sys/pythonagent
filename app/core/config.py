@@ -22,7 +22,10 @@ class Settings(BaseSettings):
     """集中管理所有配置项，从环境变量 / .env 文件读取，带类型校验。"""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            ".env",
+        ),
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
