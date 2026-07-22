@@ -1,6 +1,6 @@
 # API 文档
 
-本文档描述多智能体系统 FastAPI 服务的 HTTP API。接口版本为 `2.0.0`。
+本文档描述多智能体系统 FastAPI 服务的 HTTP API 与 WebSocket API。当前所有业务接口统一使用 `/api/v1` 版本前缀。
 
 ## 服务地址
 
@@ -10,25 +10,34 @@
 http://127.0.0.1:8000
 ```
 
-服务启动后还可访问自动生成的接口文档：
+自动生成文档：
 
 - Swagger UI：`http://127.0.0.1:8000/docs`
 - ReDoc：`http://127.0.0.1:8000/redoc`
 - OpenAPI JSON：`http://127.0.0.1:8000/openapi.json`
+- Prometheus 指标：`http://127.0.0.1:8000/metrics`
 
-除注册、登录、健康检查和前端首页外，其余接口均要求 JWT Bearer Token。
+除注册、登录、健康检查、Prometheus 指标和前端静态页面外，其余接口均要求 JWT Bearer Token。
 
-## 认证
+## 认证方式
 
-调用受保护接口时添加请求头：
+受保护 HTTP 接口使用请求头：
 
 ```http
 Authorization: Bearer <access_token>
 ```
 
+WebSocket 接口通过查询参数传递 Token：
+
+```text
+?token=<access_token>
+```
+
+## 认证接口
+
 ### 注册用户
 
-`POST /api/auth/register`
+`POST /api/v1/auth/register`
 
 请求体：
 
@@ -39,24 +48,19 @@ Authorization: Bearer <access_token>
 }
 ```
 
-约束：
-
-- 用户名长度为 2 至 50 个字符。
-- 密码长度不少于 6 个字符。
-- 用户名不能重复。
-
 成功响应：
 
 ```json
 {
-  "access_token": "<jwt-token>",
+  "access_token": "<jwt-access-token>",
+  "refresh_token": "<jwt-refresh-token>",
   "token_type": "bearer",
   "user_id": 1,
   "username": "demo_user"
 }
 ```
 
-可能的错误：
+可能错误：
 
 - `400`：用户名或密码不符合要求。
 - `409`：用户名已存在。
@@ -64,7 +68,7 @@ Authorization: Bearer <access_token>
 
 ### 用户登录
 
-`POST /api/auth/login`
+`POST /api/v1/auth/login`
 
 请求体：
 
@@ -75,16 +79,44 @@ Authorization: Bearer <access_token>
 }
 ```
 
-成功响应格式与注册接口相同。
+成功响应格式与注册接口一致。
 
-可能的错误：
+可能错误：
 
 - `401`：用户名或密码错误。
 - `403`：账户已被禁用。
 
+### 刷新 Token
+
+`POST /api/v1/auth/refresh`
+
+请求体：
+
+```json
+{
+  "refresh_token": "<jwt-refresh-token>"
+}
+```
+
+成功响应格式与登录接口一致。
+
+### 登出
+
+`POST /api/v1/auth/logout`
+
+请求体：
+
+```json
+{
+  "refresh_token": "<jwt-refresh-token>"
+}
+```
+
+成功响应：`204 No Content`。
+
 ### 获取当前用户
 
-`GET /api/auth/me`
+`GET /api/v1/auth/me`
 
 需要认证。
 
@@ -94,46 +126,117 @@ Authorization: Bearer <access_token>
 {
   "user_id": 1,
   "username": "demo_user",
+  "is_admin": false,
   "created_at": "2026-07-18T10:00:00"
 }
 ```
 
-## 会话
+## 通用聊天接口
 
-### 获取新会话标识
+### WebSocket 流式聊天
 
-`GET /api/session`
+`WS /api/v1/ws/chat/{session_id}?token=<access_token>`
 
-需要认证。每次调用都会生成新的 8 位 `session_id`。
-
-成功响应：
+客户端发送消息：
 
 ```json
 {
-  "session_id": "a1b2c3d4",
-  "is_new": true
+  "question": "介绍一下 LangGraph",
+  "image_filename": null,
+  "is_first_turn": true
 }
 ```
 
-### 创建新会话标识
+服务端事件类型：
 
-`POST /api/session/new`
+| 类型 | 字段 | 说明 |
+|------|------|------|
+| `status` | `node` / `content` | 当前执行节点或状态提示 |
+| `token` | `content` | 回答文本增量，客户端按顺序拼接 |
+| `thought` | `content` | 思考过程内容 |
+| `tool` | `content` | 工具调用或搜索/RAG提示 |
+| `done` | `answer` / `token_count` | 对话完成事件 |
+| `error` | `content` | 执行失败描述 |
+
+示例事件：
+
+```json
+{"type":"status","node":"supervisor","content":"调度主管分析中"}
+```
+
+```json
+{"type":"token","content":"你好"}
+```
+
+```json
+{"type":"done","answer":"你好，有什么可以帮你？","token_count":18}
+```
+
+### 非流式聊天
+
+`POST /api/v1/chat`
 
 需要认证。
 
+请求体：
+
+```json
+{
+  "question": "介绍一下 LangGraph",
+  "session_id": "a1b2c3d4",
+  "image_filename": null,
+  "is_first_turn": true
+}
+```
+
 成功响应：
 
 ```json
 {
-  "session_id": "a1b2c3d4"
+  "answer": "LangGraph 是用于构建有状态智能体工作流的框架。",
+  "session_id": "a1b2c3d4",
+  "token_count": 128,
+  "error": null
 }
 ```
 
-### 获取历史会话
+### 上传聊天图片
 
-`GET /api/conversations`
+`POST /api/v1/chat/upload-image`
 
-需要认证。结果按最后更新时间倒序排列。
+需要认证。请求内容类型为 `multipart/form-data`，表单字段名为 `file`。
+
+成功响应：
+
+```json
+{
+  "filename": "screen_1784300000.png"
+}
+```
+
+随后在聊天请求中传入：
+
+```json
+{
+  "question": "请描述这张图片",
+  "session_id": "a1b2c3d4",
+  "image_filename": "screen_1784300000.png"
+}
+```
+
+## 会话管理接口
+
+### 获取会话列表
+
+`GET /api/v1/conversations?conv_type=general`
+
+需要认证。
+
+查询参数：
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `conv_type` | string | `general` | 会话类型：`general` 或 `mfg` |
 
 成功响应：
 
@@ -143,6 +246,7 @@ Authorization: Bearer <access_token>
     {
       "session_id": "a1b2c3d4",
       "title": "介绍一下 LangGraph",
+      "conv_type": "general",
       "created_at": "2026-07-18T10:00:00",
       "updated_at": "2026-07-18T10:02:00"
     }
@@ -152,9 +256,9 @@ Authorization: Bearer <access_token>
 
 ### 获取会话消息
 
-`GET /api/conversations/{conv_id}/messages`
+`GET /api/v1/conversations/{session_id}/messages`
 
-需要认证。最多返回 100 条消息，按创建时间正序排列。
+需要认证。
 
 成功响应：
 
@@ -164,161 +268,77 @@ Authorization: Bearer <access_token>
     {
       "role": "user",
       "content": "你好",
+      "image_filename": null,
       "created_at": "2026-07-18T10:00:00"
     },
     {
       "role": "assistant",
       "content": "你好，有什么可以帮你？",
+      "token_count": 18,
       "created_at": "2026-07-18T10:00:02"
     }
   ]
 }
 ```
 
+### 重命名会话
+
+`PATCH /api/v1/conversations/{session_id}`
+
+请求体：
+
+```json
+{
+  "title": "新的会话标题"
+}
+```
+
+成功响应：`204 No Content`。
+
 ### 删除会话
 
-`DELETE /api/conversations/{conv_id}`
+`DELETE /api/v1/conversations/{session_id}`
 
-需要认证。会同时删除该会话的消息。
+成功响应：`204 No Content`。
 
-成功响应：
+### 导出会话
 
-```json
-{
-  "success": true
-}
-```
+`GET /api/v1/conversations/{session_id}/export?format=markdown`
 
-## 聊天
+查询参数：
 
-聊天请求体结构：
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `format` | string | `markdown` 或 `json` |
 
-```json
-{
-  "question": "介绍一下 LangGraph",
-  "session_id": "a1b2c3d4",
-  "image_filename": "example_1784300000.png",
-  "is_first_turn": true
-}
-```
+### Token 统计
 
-字段说明：
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-| --- | --- | --- | --- | --- |
-| `question` | string | 是 | 无 | 用户问题，去除空白后不能为空。 |
-| `session_id` | string 或 null | 否 | 自动生成 | LangGraph Checkpointer 的线程标识。后续对话应复用同一值。 |
-| `image_filename` | string 或 null | 否 | `""` | 图片上传接口返回的文件名。文件不存在时按纯文本请求处理。 |
-| `is_first_turn` | boolean | 否 | `true` | 首轮设为 `true`，后续对话设为 `false`。 |
-
-### 非流式聊天
-
-`POST /api/chat`
+`GET /api/v1/stats/tokens?days=30`
 
 需要认证。
 
-成功响应：
-
-```json
-{
-  "answer": "LangGraph 是用于构建有状态智能体工作流的框架。",
-  "session_id": "a1b2c3d4",
-  "image_path": "",
-  "error": null
-}
-```
-
-可能的错误：
-
-- `400`：问题为空。
-- `500`：智能体执行失败。
-
-### SSE 流式聊天
-
-`POST /api/chat/stream`
-
-需要认证。请求体与非流式聊天相同，响应类型为 `text/event-stream`。
-
-事件采用以下格式：
-
-```text
-data: {"type":"status","node":"supervisor"}
-
-data: {"type":"token","content":"你好"}
-
-data: {"type":"done"}
-
-```
-
-事件类型：
-
-| `type` | 字段 | 说明 |
-| --- | --- | --- |
-| `status` | `node` | 当前执行节点，例如 `preprocess`、`supervisor`、`search`、`answer`。 |
-| `token` | `content` | 回答文本增量。客户端应按顺序拼接。 |
-| `done` | 无 | 流正常结束。 |
-| `error` | `error` | 流执行失败，字段中包含错误描述。 |
-
-浏览器原生 `EventSource` 只能发送 GET 请求，此接口是 POST，因此前端应使用 `fetch` 读取响应流。
-
-## 图片上传与识别
-
-图片识别采用两步流程：先上传图片，再把返回的 `filename` 作为 `image_filename` 调用聊天接口。
-
-### 上传图片
-
-`POST /api/upload/image`
-
-需要认证。请求内容类型为 `multipart/form-data`，表单字段名为 `image`。
-
-支持扩展名：`png`、`jpg`、`jpeg`、`gif`、`bmp`、`webp`。
-
-成功响应：
-
-```json
-{
-  "filename": "screen_1784300000.png",
-  "path": "./uploads/screen_1784300000.png",
-  "error": null
-}
-```
-
-随后调用聊天接口：
-
-```json
-{
-  "question": "请描述这张图片",
-  "session_id": "a1b2c3d4",
-  "image_filename": "screen_1784300000.png",
-  "is_first_turn": true
-}
-```
-
-## RAG 文档
+## RAG 文档接口
 
 ### 上传文档
 
-`POST /api/upload/document`
+`POST /api/v1/documents/upload`
 
-需要认证。请求内容类型为 `multipart/form-data`，表单字段名为 `document`。
+需要认证。请求内容类型为 `multipart/form-data`，表单字段名为 `file`。
 
-支持扩展名：`txt`、`md`、`csv`、`json`、`pdf`、`html`、`py`、`java`、`js`、`ts`。
+支持扩展名包括：`txt`、`md`、`csv`、`json`、`pdf`、`docx`、`html`、`py`、`java`、`js`、`ts`。
 
 成功响应：
 
 ```json
 {
   "filename": "guide.md",
-  "chunks": 12,
-  "error": null
+  "chunks": 12
 }
 ```
 
-`chunks` 为写入向量库的切片数量。如果嵌入模型或 ChromaDB 不可用，当前实现可能返回 `0`。
-
 ### 获取文档列表
 
-`GET /api/documents`
+`GET /api/v1/documents`
 
 需要认证。
 
@@ -338,23 +358,139 @@ data: {"type":"done"}
 
 ### 删除文档
 
-`DELETE /api/documents/{filename}`
+`DELETE /api/v1/documents/{filename}`
 
 需要认证。
+
+成功响应：`204 No Content`。
+
+## 工业智造接口
+
+### 工业 WebSocket 聊天
+
+`WS /api/v1/ws/manufacturing/{session_id}?token=<access_token>`
+
+客户端发送消息格式与通用聊天一致。
+
+### 查询故障码
+
+`GET /api/v1/mfg/fault-codes?code=E001`
+
+需要认证。
+
+### 查询设备信息
+
+`GET /api/v1/mfg/equipment?equipment_id=EQ-001`
+
+需要认证。
+
+### 上传工业图片
+
+`POST /api/v1/mfg/upload-image`
+
+需要认证。请求内容类型为 `multipart/form-data`，表单字段名为 `file`。
+
+### 上传工业文档
+
+`POST /api/v1/mfg/documents/upload`
+
+需要认证。请求内容类型为 `multipart/form-data`，表单字段名为 `file`。
+
+### 获取工业文档列表
+
+`GET /api/v1/mfg/documents`
+
+需要认证。
+
+### 删除工业文档
+
+`DELETE /api/v1/mfg/documents/{filename}`
+
+需要认证。成功响应：`204 No Content`。
+
+### 访问上传文件
+
+`GET /api/v1/uploads/{filename}?token=<access_token>`
+
+该接口用于前端展示已上传图片。
+
+## Human-in-the-loop 人工审批接口
+
+当 `HITL_ENABLED=true` 且用户问题触发敏感关键词时，LangGraph 工作流会在 `human_review` 节点 interrupt 暂停。
+
+### 批准请求
+
+`POST /api/v1/review/approve`
+
+请求体：
+
+```json
+{
+  "thread_id": "a1b2c3d4",
+  "action": "approved"
+}
+```
 
 成功响应：
 
 ```json
 {
-  "success": true
+  "success": true,
+  "message": "审批已通过，请求继续执行"
 }
 ```
 
+### 拒绝请求
+
+`POST /api/v1/review/reject`
+
+请求体：
+
+```json
+{
+  "thread_id": "a1b2c3d4",
+  "action": "rejected"
+}
+```
+
+成功响应：
+
+```json
+{
+  "success": true,
+  "message": "审批已拒绝，请求已终止"
+}
+```
+
+## 管理接口
+
+以下接口需要管理员权限。
+
+### 获取用户列表
+
+`GET /api/v1/admin/users`
+
+### 更新用户状态
+
+`PATCH /api/v1/admin/users/{user_id}`
+
+请求体：
+
+```json
+{
+  "is_active": true
+}
+```
+
+### 获取系统统计
+
+`GET /api/v1/admin/stats`
+
 ## 系统接口
 
-### 健康检查
+### 基础健康检查
 
-`GET /api/health`
+`GET /api/v1/health`
 
 无需认证。
 
@@ -367,17 +503,37 @@ data: {"type":"done"}
 }
 ```
 
+### 深度健康检查
+
+`GET /api/v1/health/deep`
+
+检查数据库、Redis、熔断器和 LLM API 配置。
+
+成功响应：
+
+```json
+{
+  "healthy": true,
+  "checks": {
+    "database": {"status": "healthy", "latency_ms": 0},
+    "redis": {"status": "healthy"},
+    "circuit_breaker": {"state": "closed"},
+    "llm_api": {"status": "configured"}
+  }
+}
+```
+
+如果任一关键依赖不健康，接口返回 `503`。
+
 ### Prometheus 指标
 
 `GET /metrics`
 
-安装 `prometheus-fastapi-instrumentator` 后可用。该端点用于输出 Prometheus 文本格式指标。
+返回 Prometheus 文本格式指标。
 
 ## 调用示例
 
-以下 PowerShell 示例使用变量保存 Token，不包含任何真实凭据。
-
-### 注册并发送消息
+### PowerShell 注册并发送非流式消息
 
 ```powershell
 $baseUrl = "http://127.0.0.1:8000"
@@ -388,7 +544,7 @@ $registerBody = @{
 } | ConvertTo-Json
 
 $auth = Invoke-RestMethod `
-    -Uri "$baseUrl/api/auth/register" `
+    -Uri "$baseUrl/api/v1/auth/register" `
     -Method Post `
     -ContentType "application/json" `
     -Body $registerBody
@@ -397,61 +553,47 @@ $headers = @{ Authorization = "Bearer $($auth.access_token)" }
 
 $chatBody = @{
     question = "介绍一下 LangGraph"
-    session_id = $null
-    image_filename = ""
+    session_id = "demo-session"
+    image_filename = $null
     is_first_turn = $true
 } | ConvertTo-Json
 
 Invoke-RestMethod `
-    -Uri "$baseUrl/api/chat" `
+    -Uri "$baseUrl/api/v1/chat" `
     -Method Post `
     -Headers $headers `
     -ContentType "application/json" `
     -Body $chatBody
 ```
 
-### 使用 curl 上传图片
+### curl 上传文档
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/api/upload/image" \
+curl -X POST "http://127.0.0.1:8000/api/v1/documents/upload" \
   -H "Authorization: Bearer <access_token>" \
-  -F "image=@screen.png"
+  -F "file=@guide.md"
 ```
 
-### 使用 Python 调用流式聊天
+### Python WebSocket 调用示例
 
 ```python
+import asyncio
 import json
-import requests
+import websockets
 
-base_url = "http://127.0.0.1:8000"
-token = "<access_token>"
+async def main():
+    token = "<access_token>"
+    session_id = "demo-session"
+    url = f"ws://127.0.0.1:8000/api/v1/ws/chat/{session_id}?token={token}"
+    async with websockets.connect(url) as ws:
+        await ws.send(json.dumps({"question": "你好", "is_first_turn": True}))
+        async for message in ws:
+            event = json.loads(message)
+            print(event)
+            if event.get("type") in {"done", "error"}:
+                break
 
-payload = {
-    "question": "介绍一下 LangGraph",
-    "session_id": None,
-    "image_filename": "",
-    "is_first_turn": True,
-}
-
-with requests.post(
-    f"{base_url}/api/chat/stream",
-    headers={"Authorization": f"Bearer {token}"},
-    json=payload,
-    stream=True,
-    timeout=120,
-) as response:
-    response.raise_for_status()
-    for line in response.iter_lines(decode_unicode=True):
-        if not line or not line.startswith("data: "):
-            continue
-        event = json.loads(line[6:])
-        if event["type"] == "token":
-            print(event["content"], end="", flush=True)
-        elif event["type"] == "error":
-            raise RuntimeError(event["error"])
-        elif event["type"] == "done":
-            print()
+asyncio.run(main())
 ```
 
 ## 通用错误格式
@@ -476,11 +618,14 @@ FastAPI 主动抛出的请求错误通常采用：
 常见状态码：
 
 | 状态码 | 说明 |
-| --- | --- |
-| `200` | 请求成功。 |
-| `400` | 参数或文件内容不符合要求。 |
-| `401` | 未提供 Token，或 Token 无效、过期。 |
-| `403` | 当前账户被禁用。 |
-| `409` | 注册用户名已存在。 |
-| `422` | JSON 或表单字段校验失败。 |
-| `500` | 服务端执行失败。 |
+|--------|------|
+| `200` | 请求成功 |
+| `201` | 资源创建成功 |
+| `204` | 请求成功且无响应体 |
+| `400` | 参数或文件内容不符合要求 |
+| `401` | 未提供 Token，或 Token 无效、过期 |
+| `403` | 权限不足或账户被禁用 |
+| `409` | 资源冲突，例如用户名已存在 |
+| `422` | JSON 或表单字段校验失败 |
+| `500` | 服务端执行失败 |
+| `503` | 深度健康检查发现关键依赖不可用 |

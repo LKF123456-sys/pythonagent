@@ -52,6 +52,9 @@ NODE_RAG = "rag"  # RAG节点名称，负责知识库检索
 NODE_ANSWER = "answer"  # 回答节点名称，负责生成最终答案
 NODE_STORE_MEMORY = "store_memory"  # 记忆存储节点名称，负责保存对话记忆
 
+# Human-in-the-loop 节点名称
+NODE_HUMAN_REVIEW = "human_review"  # 人工审批节点名称
+
 # 允许的图片扩展名
 ALLOWED_IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp", "webp"}  # 允许上传的图片文件扩展名集合
 

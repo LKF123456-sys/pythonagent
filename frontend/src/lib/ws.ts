@@ -10,6 +10,7 @@ interface ChatSocketOptions {
   onStatus?: (status: WSStatus) => void;
 }
 
+const WS_API_PREFIX = "/api/v1"; // 后端 WebSocket 路由也被统一挂载到 API v1 前缀下
 const HEARTBEAT_INTERVAL = 25_000; // 25s 心跳
 const MAX_BACKOFF = 15_000;
 
@@ -34,7 +35,7 @@ export class ChatSocket {
     this.onStatus?.("connecting");
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
     const token = getAccessToken() ?? "";
-    const url = `${proto}://${window.location.host}/ws/chat/${this.sessionId}?token=${encodeURIComponent(token)}`;
+    const url = `${proto}://${window.location.host}${WS_API_PREFIX}/ws/chat/${this.sessionId}?token=${encodeURIComponent(token)}`;
     this.ws = new WebSocket(url);
 
     this.ws.onopen = () => {

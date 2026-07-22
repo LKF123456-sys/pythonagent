@@ -5,6 +5,7 @@ import os  # 导入操作系统接口标准库
 import uuid  # 导入UUID生成标准库
 from typing import AsyncGenerator, Optional  # 从typing导入异步生成器和可选类型
 
+from app.core.cache import get_cache  # 导入全局缓存服务获取函数（Redis优先，内存回退）
 from app.core.config import get_settings  # 导入配置获取函数
 from app.core.constants import MessageRole  # 导入消息角色常量
 from app.core.logging import setup_logger  # 导入日志记录器配置函数
@@ -15,6 +16,11 @@ from app.models.chat import ChatResponse  # 导入聊天响应模型
 from app.repositories import conversation_repo, message_repo  # 导入会话和消息数据访问仓库
 
 logger = setup_logger("service.chat")  # 创建名为service.chat的日志记录器
+
+
+# ============================================================  # 分隔注释
+# 历史上下文缓存（已迁移至 Redis 分布式缓存，见 app/core/cache.py）  # 说明历史缓存已迁移到分布式缓存服务
+# ============================================================  # 分隔注释
 
 
 # ============================================================  # 分隔注释
@@ -86,6 +92,7 @@ async def _finalize_turn(  # 定义一轮对话结束后的持久化内部协程
         await message_repo.add_message(  # 添加助手消息到数据库
             session_id, MessageRole.ASSISTANT.value, event.answer, event.token_count  # 会话ID、角色、内容、token数
         )
+        await get_cache().delete(f"history:{session_id}")  # 助手新消息入库后使历史缓存失效（Redis分布式缓存）
     await conversation_repo.update_conversation_time(session_id)  # 更新会话活跃时间
     if is_first_turn:  # 如果是首轮对话
         asyncio.create_task(_set_conversation_title(session_id, user_id, question))  # 异步生成会话标题
@@ -111,21 +118,34 @@ async def chat_stream(  # 定义流式聊天协程函数
         session_id = uuid.uuid4().hex  # 生成新的会话ID
 
     image_path = _resolve_image_path(image_filename)  # 解析图片路径
-    history_context, is_first_turn = await _build_history_context(session_id)  # 构建历史上下文
+    cached_history = await get_cache().get(f"history:{session_id}")  # 先查历史上下文缓存（Redis分布式），避免重复查询数据库
+    if cached_history is not None:  # 缓存命中则直接使用缓存数据
+        history_context, is_first_turn = cached_history  # 使用缓存的上下文与首轮标记
+    else:  # 缓存未命中
+        history_context, is_first_turn = await _build_history_context(session_id)  # 查询数据库构建历史上下文
+        await get_cache().set(f"history:{session_id}", (history_context, is_first_turn))  # 写入缓存供后续请求复用（Redis分布式缓存）
     await _ensure_conversation(session_id, user_id, question)  # 确保会话存在
-    await message_repo.add_message(session_id, MessageRole.USER.value, question, image_filename=image_filename)  # 存储用户消息
+    await message_repo.add_message(session_id, MessageRole.USER.value, question, image_filename=image_filename)  # 存储用户消息（流式场景需先存，Agent执行期间可能查询历史）
+    await get_cache().delete(f"history:{session_id}")  # 用户新消息入库后使历史缓存失效（Redis分布式缓存）
 
-    async for event in run_agent_stream(  # 异步迭代智能体产生的流事件
-        user_question=question,  # 用户问题
-        thread_id=session_id,  # 线程ID
-        image_path=image_path,  # 图片路径
-        history_context=history_context,  # 历史上下文
-        is_first_turn=is_first_turn,  # 是否首轮
-        user_id=user_id,  # 用户ID
-    ):
-        if event.type == "done":  # 如果是完成事件
-            await _finalize_turn(session_id, user_id, question, event, is_first_turn)  # 执行持久化
-        yield event  # 产出事件给调用方
+    try:  # 尝试执行流式智能体调用，捕获中途异常避免WebSocket直接断开
+        async for event in run_agent_stream(  # 异步迭代智能体产生的流事件
+            user_question=question,  # 用户问题
+            thread_id=session_id,  # 线程ID
+            image_path=image_path,  # 图片路径
+            history_context=history_context,  # 历史上下文
+            is_first_turn=is_first_turn,  # 是否首轮
+            user_id=user_id,  # 用户ID
+        ):
+            if event.type == "done":  # 如果是完成事件
+                try:  # 尝试执行持久化，失败时不中断流
+                    await _finalize_turn(session_id, user_id, question, event, is_first_turn)  # 执行持久化
+                except Exception:  # 持久化过程发生异常
+                    logger.exception("流式聊天持久化失败")  # 记录异常日志，不中断流
+            yield event  # 产出事件给调用方
+    except Exception as e:  # 智能体流式执行发生异常
+        logger.exception("流式聊天异常")  # 记录异常日志
+        yield GraphStreamEvent(type="error", content=str(e))  # 产出错误事件给调用方，避免连接直接断开
 
 
 # ============================================================  # 分隔注释
@@ -143,11 +163,15 @@ async def chat_non_stream(  # 定义非流式聊天协程函数
         session_id = uuid.uuid4().hex  # 生成新的会话ID
 
     image_path = _resolve_image_path(image_filename)  # 解析图片路径
-    history_context, is_first_turn = await _build_history_context(session_id)  # 构建历史上下文
+    cached_history = await get_cache().get(f"history:{session_id}")  # 先查历史上下文缓存（Redis分布式），避免重复查询数据库
+    if cached_history is not None:  # 缓存命中则直接使用缓存数据
+        history_context, is_first_turn = cached_history  # 使用缓存的上下文与首轮标记
+    else:  # 缓存未命中
+        history_context, is_first_turn = await _build_history_context(session_id)  # 查询数据库构建历史上下文
+        await get_cache().set(f"history:{session_id}", (history_context, is_first_turn))  # 写入缓存供后续请求复用（Redis分布式缓存）
     await _ensure_conversation(session_id, user_id, question)  # 确保会话存在
-    await message_repo.add_message(session_id, MessageRole.USER.value, question, image_filename=image_filename)  # 存储用户消息
 
-    try:  # 尝试调用智能体
+    try:  # 尝试调用智能体（先不存用户消息，避免失败后产生孤立消息）
         answer = await run_agent(  # 调用非流式智能体运行函数
             user_question=question,  # 用户问题
             thread_id=session_id,  # 线程ID
@@ -158,9 +182,12 @@ async def chat_non_stream(  # 定义非流式聊天协程函数
         )
     except Exception as e:  # 捕获异常
         logger.exception("非流式聊天失败")  # 记录异常日志
-        return ChatResponse(answer="", session_id=session_id, error=str(e))  # 返回错误响应
+        return ChatResponse(answer="", session_id=session_id, error=str(e))  # 返回错误响应，不存用户消息避免孤立消息
 
-    await message_repo.add_message(session_id, MessageRole.ASSISTANT.value, answer)  # 存储助手回答
+    await message_repo.add_message(session_id, MessageRole.USER.value, question, image_filename=image_filename)  # 智能体成功后先存用户消息
+    await get_cache().delete(f"history:{session_id}")  # 用户新消息入库后使历史缓存失效（Redis分布式缓存）
+    await message_repo.add_message(session_id, MessageRole.ASSISTANT.value, answer)  # 再存助手回答
+    await get_cache().delete(f"history:{session_id}")  # 助手新消息入库后使历史缓存失效（Redis分布式缓存）
     await conversation_repo.update_conversation_time(session_id)  # 更新会话活跃时间
     if is_first_turn:  # 如果是首轮对话
         asyncio.create_task(_set_conversation_title(session_id, user_id, question))  # 异步生成会话标题

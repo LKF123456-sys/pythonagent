@@ -13,7 +13,6 @@
 由 `app.agents.llm.create_llm` 在创建主模型后自动套上，对调用方无感。
 """
 
-import threading  # 导入线程模块，用于线程锁保证线程安全
 import time  # 导入时间模块，用于获取时间戳和单调时钟
 from typing import Any, List, Optional  # 从typing导入Any、List、Optional类型，用于类型注解
 
@@ -86,23 +85,24 @@ class CircuitBreaker:  # 定义熔断器类
         half-open --探测成功-->       closed
         half-open --探测失败-->       open
     """
+    # 注意：asyncio 事件循环是单线程模型，同一事件循环内不存在并发竞争，
+    # 因此不再使用 threading.Lock（它会阻塞事件循环）。
+    # 多进程部署时每个进程有独立实例，互不影响。
 
     def __init__(self, failure_threshold: int = 5, recovery_timeout: float = 60.0) -> None:  # 熔断器构造函数
         self.failure_threshold = failure_threshold  # 设置连续失败跳闸阈值
         self.recovery_timeout = recovery_timeout  # 设置冷却恢复超时时间（秒）
         self._failure_count = 0  # 当前连续失败计数，初始为0
         self._opened_at: Optional[float] = None  # 熔断器打开时间戳，初始为None
-        self._lock = threading.Lock()  # 创建线程锁，保证状态变更线程安全
 
     @property  # 声明为属性
     def state(self) -> str:  # 定义状态属性，返回当前状态字符串
         """当前状态：closed / open / half-open。"""
-        with self._lock:  # 获取线程锁
-            if self._opened_at is None:  # 如果从未打开过
-                return "closed"  # 返回关闭状态
-            if time.monotonic() - self._opened_at >= self.recovery_timeout:  # 如果冷却期已过
-                return "half-open"  # 返回半开状态
-            return "open"  # 否则返回打开状态
+        if self._opened_at is None:  # 如果从未打开过
+            return "closed"  # 返回关闭状态
+        if time.monotonic() - self._opened_at >= self.recovery_timeout:  # 如果冷却期已过
+            return "half-open"  # 返回半开状态
+        return "open"  # 否则返回打开状态
 
     def allow_request(self) -> bool:  # 定义是否放行请求的方法
         """是否放行请求（open 状态拒绝，half-open 放行探测）。"""
@@ -110,18 +110,16 @@ class CircuitBreaker:  # 定义熔断器类
 
     def record_success(self) -> None:  # 定义记录成功的方法
         """记录成功：重置计数并关闭熔断。"""
-        with self._lock:  # 获取线程锁
-            self._failure_count = 0  # 重置失败计数为0
-            self._opened_at = None  # 清除打开时间戳，关闭熔断
+        self._failure_count = 0  # 重置失败计数为0
+        self._opened_at = None  # 清除打开时间戳，关闭熔断
 
     def record_failure(self) -> None:  # 定义记录失败的方法
         """记录失败：累计计数，达到阈值则跳闸。"""
-        with self._lock:  # 获取线程锁
-            self._failure_count += 1  # 失败计数加1
-            if self._failure_count >= self.failure_threshold:  # 如果失败计数达到阈值
-                if self._opened_at is None:  # 如果熔断器之前未打开
-                    logger.warning("熔断器打开：连续失败 %d 次", self._failure_count)  # 记录警告日志
-                self._opened_at = time.monotonic()  # 记录熔断打开的单调时间戳
+        self._failure_count += 1  # 失败计数加1
+        if self._failure_count >= self.failure_threshold:  # 如果失败计数达到阈值
+            if self._opened_at is None:  # 如果熔断器之前未打开
+                logger.warning("熔断器打开：连续失败 %d 次", self._failure_count)  # 记录警告日志
+            self._opened_at = time.monotonic()  # 记录熔断打开的单调时间戳
 
 
 # ============================================================
@@ -135,13 +133,15 @@ class TokenBudget:  # 定义令牌预算类
     用量达到预算上限时，`check()` 抛出 TokenBudgetExceeded，
     拒绝新的 LLM 调用，防止成本失控。budget<=0 表示不限制。
     """
+    # 注意：asyncio 事件循环是单线程模型，同一事件循环内不存在并发竞争，
+    # 因此不再使用 threading.Lock（它会阻塞事件循环）。
+    # 多进程部署时每个进程有独立实例，互不影响。
 
     WINDOW_SECONDS = 60.0  # 滑动窗口时间长度，60秒
 
     def __init__(self, budget_per_minute: int) -> None:  # 令牌预算构造函数
         self.budget_per_minute = budget_per_minute  # 设置每分钟令牌预算上限
         self._window: List[tuple] = []  # (monotonic 时间戳, token 数)  # 滑动窗口记录列表，存(时间戳, token数)元组
-        self._lock = threading.Lock()  # 创建线程锁，保证线程安全
 
     def _purge(self, now: float) -> None:  # 定义清理过期记录的私有方法
         """清理窗口外的过期记录。"""
@@ -151,9 +151,8 @@ class TokenBudget:  # 定义令牌预算类
     def usage(self) -> int:  # 定义获取当前用量的方法，返回token总数
         """最近 60 秒的累计 token 用量。"""
         now = time.monotonic()  # 获取当前单调时间
-        with self._lock:  # 获取线程锁
-            self._purge(now)  # 清理过期记录
-            return sum(n for _, n in self._window)  # 返回窗口内所有token数的总和
+        self._purge(now)  # 清理过期记录
+        return sum(n for _, n in self._window)  # 返回窗口内所有token数的总和
 
     def check(self) -> None:  # 定义预算检查方法
         """预算检查：超限时抛出 TokenBudgetExceeded。"""
@@ -170,9 +169,8 @@ class TokenBudget:  # 定义令牌预算类
         if tokens <= 0:  # 如果token数不大于0
             return  # 不记录，直接返回
         now = time.monotonic()  # 获取当前单调时间
-        with self._lock:  # 获取线程锁
-            self._purge(now)  # 清理过期记录
-            self._window.append((now, tokens))  # 将当前调用的(时间戳, token数)追加到窗口
+        self._purge(now)  # 清理过期记录
+        self._window.append((now, tokens))  # 将当前调用的(时间戳, token数)追加到窗口
 
 
 # ============================================================

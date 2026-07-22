@@ -3,10 +3,11 @@
 from fastapi import APIRouter, Depends  # 从FastAPI导入API路由器和依赖注入功能
 from pydantic import BaseModel, Field  # 从Pydantic导入数据模型基类和字段定义工具
 
+from app.core.config import get_settings  # 导入配置获取函数，用于深度健康检查读取LLM API配置
 from app.routers.deps import get_admin_user  # 导入管理员权限校验依赖，用于保护管理后台路由
 from app.services import admin_service  # 导入管理后台业务逻辑服务模块
 
-router = APIRouter(prefix="/api/admin", tags=["管理"])  # 创建管理后台路由器，设置URL前缀为/api/admin和API文档标签
+router = APIRouter(prefix="/admin", tags=["管理"])  # 创建管理后台路由器，设置URL前缀为/admin和API文档标签
 
 
 class UserActiveRequest(BaseModel):  # 定义用户启用/禁用请求的Pydantic数据模型
@@ -46,7 +47,58 @@ async def system_stats(admin: dict = Depends(get_admin_user)) -> dict:  # 定义
 health_router = APIRouter(tags=["健康"])  # 创建健康检查路由器，仅设置API文档标签，无URL前缀
 
 
-@health_router.get("/api/health")  # 注册GET路由，路径为/api/health，用于深度健康检查
+@health_router.get("/health")  # 注册GET路由，路径为/health，用于深度健康检查
 async def health_check() -> dict:  # 定义异步函数，无参数
     """深度健康检查：PostgreSQL / pgvector / Ollama / LLM API。"""  # 路由文档字符串
     return await admin_service.deep_health_check()  # 调用服务层执行深度健康检查并返回结果
+
+
+@health_router.get("/health/deep")  # 深度健康检查路由，路径为/health/deep
+async def deep_health_check():  # 定义深度健康检查异步函数
+    """深度健康检查：检查所有依赖服务的连通性。"""  # 路由文档字符串
+    checks = {}  # 检查结果字典，存储各组件检查状态
+    overall_healthy = True  # 总体健康状态，初始为True
+
+    # 检查数据库连接
+    try:  # 开始异常捕获块
+        from app.db.connection import get_pool  # 导入连接池获取函数
+        pool = get_pool()  # 获取数据库连接池实例
+        async with pool.acquire() as conn:  # 从连接池获取一个连接
+            await conn.fetchval("SELECT 1")  # 执行简单查询测试连通性
+        checks["database"] = {"status": "healthy", "latency_ms": 0}  # 数据库健康，记录状态和延迟
+    except Exception as e:  # 捕获异常
+        checks["database"] = {"status": "unhealthy", "error": str(e)}  # 数据库异常，记录错误信息
+        overall_healthy = False  # 总体不健康
+
+    # 检查Redis缓存
+    try:  # 开始异常捕获块
+        from app.core.cache import get_cache  # 导入缓存服务获取函数
+        cache = get_cache()  # 获取缓存实例
+        await cache.set("health_check", "ok", ttl=10)  # 写入测试数据，TTL为10秒
+        result = await cache.get("health_check")  # 读取测试数据验证连通性
+        checks["redis"] = {"status": "healthy" if result == "ok" else "unhealthy"}  # Redis健康状态判定
+        if result != "ok":  # 如果读取结果不正确
+            overall_healthy = False  # Redis不健康，总体不健康
+    except Exception as e:  # 捕获异常
+        checks["redis"] = {"status": "unhealthy", "error": str(e)}  # Redis异常，记录错误信息
+        overall_healthy = False  # 总体不健康
+
+    # 检查熔断器状态
+    try:  # 开始异常捕获块
+        from app.agents.resilience import get_circuit_breaker  # 导入熔断器获取函数
+        breaker = get_circuit_breaker()  # 获取熔断器实例
+        checks["circuit_breaker"] = {"state": breaker.state}  # 记录熔断器当前状态
+        if breaker.state == "open":  # 如果熔断器处于打开状态
+            overall_healthy = False  # 熔断器打开则总体不健康
+    except Exception as e:  # 捕获异常
+        checks["circuit_breaker"] = {"status": "unknown", "error": str(e)}  # 熔断器状态未知，记录错误
+
+    # 检查LLM API配置
+    settings = get_settings()  # 获取应用配置
+    checks["llm_api"] = {"status": "configured" if settings.OPENAI_API_KEY else "not_configured"}  # 判断LLM API是否已配置
+    if not settings.OPENAI_API_KEY:  # 如果未配置API密钥
+        overall_healthy = False  # 未配置API密钥则总体不健康
+
+    status_code = 200 if overall_healthy else 503  # 健康返回200，不健康返回503
+    from fastapi.responses import JSONResponse  # 导入JSON响应类
+    return JSONResponse(status_code=status_code, content={"healthy": overall_healthy, "checks": checks})  # 返回检查结果

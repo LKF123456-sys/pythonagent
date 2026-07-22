@@ -14,7 +14,7 @@ from app.models.conversation import (  # 从会话模型模块导入多个Pydant
 from app.routers.deps import get_current_user  # 导入当前用户依赖，用于身份校验
 from app.services import conversation_service  # 导入会话业务逻辑服务模块
 
-router = APIRouter(prefix="/api/conversations", tags=["会话"])  # 创建会话路由器，设置URL前缀和API文档标签
+router = APIRouter(prefix="/conversations", tags=["会话"])  # 创建会话路由器，设置URL前缀和API文档标签
 
 
 @router.get("", response_model=ConversationListResponse)  # 注册GET路由，路径为/api/conversations，获取会话列表
@@ -87,7 +87,7 @@ async def export_conversation(  # 定义异步导出会话函数
 # Token 统计（独立前缀，避免与 /{session_id} 冲突）  # 说明该部分为Token统计，使用独立前缀避免路由冲突
 # ============================================================  # 分隔注释
 
-stats_router = APIRouter(prefix="/api/stats", tags=["统计"])  # 创建统计路由器，设置URL前缀和API文档标签
+stats_router = APIRouter(prefix="/stats", tags=["统计"])  # 创建统计路由器，设置URL前缀和API文档标签
 
 
 @stats_router.get("/tokens", response_model=TokenStatsResponse)  # 注册GET路由，获取Token统计

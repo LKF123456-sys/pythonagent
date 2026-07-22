@@ -1,0 +1,54 @@
+# Prometheus 告警规则：监控多智能体系统关键指标
+
+groups:  # 告警规则组定义
+  - name: agent_system_alerts  # 告警组名称，用于标识本组规则
+    rules:  # 规则列表，包含所有告警规则
+      # 熔断器打开告警
+      - alert: CircuitBreakerOpen  # 告警名称：熔断器打开
+        expr: circuit_breaker_state == 2  # 当熔断器状态为open(2)时触发告警
+        for: 1m  # 持续1分钟满足条件才告警
+        labels:  # 标签，用于告警分类和路由
+          severity: critical  # 严重级别：critical表示关键告警
+        annotations:  # 注解，提供告警的详细信息
+          summary: "熔断器已打开"  # 告警摘要信息
+          description: "LLM熔断器处于打开状态，所有LLM调用被快速失败。请检查DeepSeek API状态。"  # 告警详细描述
+
+      # Token 消耗过高告警
+      - alert: HighTokenUsage  # 告警名称：Token消耗过高
+        expr: sum(rate(token_usage_total[5m])) > 10000  # 5分钟内Token消耗速率超过10000时触发
+        for: 2m  # 持续2分钟满足条件才告警
+        labels:  # 标签，用于告警分类和路由
+          severity: warning  # 警告级别：warning表示需要注意
+        annotations:  # 注解，提供告警的详细信息
+          summary: "Token消耗异常"  # 告警摘要信息
+          description: "过去5分钟Token消耗速率超过10000/min，可能存在成本失控风险。"  # 告警详细描述
+
+      # LLM 响应缓慢告警
+      - alert: LLMSlowResponse  # 告警名称：LLM响应缓慢
+        expr: histogram_quantile(0.95, sum(rate(llm_response_duration_seconds_bucket[5m])) by (le)) > 30  # P95耗时超过30秒时触发
+        for: 5m  # 持续5分钟满足条件才告警
+        labels:  # 标签，用于告警分类和路由
+          severity: warning  # 警告级别：warning表示需要注意
+        annotations:  # 注解，提供告警的详细信息
+          summary: "LLM响应缓慢"  # 告警摘要信息
+          description: "LLM P95响应时间超过30秒，用户体验受影响。"  # 告警详细描述
+
+      # 服务不可用告警
+      - alert: ServiceDown  # 告警名称：服务不可用
+        expr: up{job="multi-agent-system"} == 0  # 服务健康检查失败时触发
+        for: 30s  # 持续30秒满足条件才告警
+        labels:  # 标签，用于告警分类和路由
+          severity: critical  # 严重级别：critical表示关键告警
+        annotations:  # 注解，提供告警的详细信息
+          summary: "服务不可用"  # 告警摘要信息
+          description: "多智能体系统服务已离线超过30秒。"  # 告警详细描述
+
+      # 高错误率告警
+      - alert: HighErrorRate  # 告警名称：高错误率
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.1  # 5xx错误率超过10%时触发
+        for: 2m  # 持续2分钟满足条件才告警
+        labels:  # 标签，用于告警分类和路由
+          severity: critical  # 严重级别：critical表示关键告警
+        annotations:  # 注解，提供告警的详细信息
+          summary: "高错误率"  # 告警摘要信息
+          description: "5xx错误率超过10%，服务可能存在严重问题。"  # 告警详细描述

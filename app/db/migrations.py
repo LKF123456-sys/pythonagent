@@ -155,6 +155,28 @@ MIGRATIONS: List[Tuple[int, str, List[str]]] = [  # 增量迁移脚本列表，�
             "CREATE INDEX IF NOT EXISTS idx_conv_type ON conversations(user_id, conv_type)",  # 创建 (user_id, conv_type) 复合索引加速按类型查询
         ],
     ),
+    (
+        7,  # 迁移版本号
+        "混合检索全文索引（rag_chunks + long_term_memories 的 tsvector/GIN/触发器）",  # 迁移描述
+        [  # SQL 语句列表
+            # ---- rag_chunks 表全文检索支持 ----
+            "ALTER TABLE rag_chunks ADD COLUMN IF NOT EXISTS tsv tsvector",  # 为 rag_chunks 添加 tsvector 全文检索列
+            "UPDATE rag_chunks SET tsv = to_tsvector('simple', content)",  # 用 content 内容填充现有行的 tsv 列
+            "CREATE INDEX IF NOT EXISTS idx_rag_chunks_tsv ON rag_chunks USING GIN(tsv)",  # 为 tsv 列创建 GIN 索引加速全文检索
+            # rag_chunks 触发器函数：INSERT/UPDATE 时自动更新 tsv 列
+            "CREATE OR REPLACE FUNCTION update_tsv_rag_chunks() RETURNS trigger AS $$ BEGIN NEW.tsv = to_tsvector('simple', NEW.content); RETURN NEW; END; $$ LANGUAGE plpgsql",  # 创建自动更新tsv的触发器函数
+            "DROP TRIGGER IF EXISTS trg_rag_chunks_tsv ON rag_chunks",  # 删除已存在的同名触发器（幂等）
+            "CREATE TRIGGER trg_rag_chunks_tsv BEFORE INSERT OR UPDATE ON rag_chunks FOR EACH ROW EXECUTE FUNCTION update_tsv_rag_chunks()",  # 创建触发器：插入或更新时自动维护 tsv
+            # ---- long_term_memories 表全文检索支持 ----
+            "ALTER TABLE long_term_memories ADD COLUMN IF NOT EXISTS tsv tsvector",  # 为 long_term_memories 添加 tsvector 全文检索列
+            "UPDATE long_term_memories SET tsv = to_tsvector('simple', content)",  # 用 content 内容填充现有行的 tsv 列
+            "CREATE INDEX IF NOT EXISTS idx_long_term_memories_tsv ON long_term_memories USING GIN(tsv)",  # 为 tsv 列创建 GIN 索引加速全文检索
+            # long_term_memories 触发器函数：INSERT/UPDATE 时自动更新 tsv 列
+            "CREATE OR REPLACE FUNCTION update_tsv_long_term_memories() RETURNS trigger AS $$ BEGIN NEW.tsv = to_tsvector('simple', NEW.content); RETURN NEW; END; $$ LANGUAGE plpgsql",  # 创建自动更新tsv的触发器函数
+            "DROP TRIGGER IF EXISTS trg_long_term_memories_tsv ON long_term_memories",  # 删除已存在的同名触发器（幂等）
+            "CREATE TRIGGER trg_long_term_memories_tsv BEFORE INSERT OR UPDATE ON long_term_memories FOR EACH ROW EXECUTE FUNCTION update_tsv_long_term_memories()",  # 创建触发器：插入或更新时自动维护 tsv
+        ],
+    ),
 ]
 
 

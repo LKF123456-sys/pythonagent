@@ -14,7 +14,7 @@ from app.models.auth import (  # 从认证模型模块导入多个Pydantic模型
 from app.routers.deps import get_current_user  # 导入获取当前用户的依赖，用于身份校验
 from app.services import auth_service  # 导入认证业务逻辑服务模块
 
-router = APIRouter(prefix="/api/auth", tags=["认证"])  # 创建认证路由器，设置URL前缀为/api/auth和API文档标签
+router = APIRouter(prefix="/auth", tags=["认证"])  # 创建认证路由器，设置URL前缀为/auth和API文档标签
 
 
 @router.post("/register", response_model=TokenResponse, status_code=201)  # 注册POST路由，注册新用户，成功返回201

@@ -3,7 +3,9 @@
 启动流程：安全校验 → 目录准备 → DB 连接池 + 迁移 → 向量库注入 → 图编译。
 """  # 模块级文档字符串，描述应用工厂和生命周期管理
 
+import asyncio  # 导入异步IO标准库，用于优雅关闭时管理待完成任务
 import os  # 导入操作系统接口标准库
+import signal  # 导入信号处理标准库，用于捕获系统终止信号触发优雅关闭
 from contextlib import asynccontextmanager  # 从contextlib导入异步上下文管理器装饰器
 
 from fastapi import FastAPI, HTTPException  # 从FastAPI导入应用类和HTTP异常类
@@ -69,10 +71,31 @@ async def lifespan(app: FastAPI):  # 定义应用生命周期协程函数
     # 图编译（单例，checkpointer 可注入）  # 内部注释
     compile_graph()  # 编译智能体图
 
+    # 分布式缓存初始化（Redis优先，不可用时降级到内存缓存）  # 内部注释说明缓存初始化
+    from app.core.cache import init_cache  # 延迟导入缓存初始化函数，避免启动时循环依赖
+    await init_cache()  # 初始化全局缓存服务（Redis连接或内存回退）
+
     logger.info("应用启动完成")  # 记录启动完成日志
     try:  # 尝试进入运行态
         yield  # 让出控制权，应用进入服务状态
     finally:  # 应用关闭时清理
+        # 优雅关闭：等待正在进行的请求完成  # 内部注释，说明优雅关闭目的
+        logger.info("正在优雅关闭服务...")  # 记录优雅关闭开始日志
+        # 获取当前所有待完成的任务（排除当前任务自身）  # 内部注释，说明任务筛选逻辑
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]  # 收集所有待完成的异步任务
+        if tasks:  # 如果存在待完成的任务
+            logger.info("等待 %d 个任务完成...", len(tasks))  # 记录待完成任务数量
+            try:  # 尝试等待所有任务完成
+                # 设置 10 秒超时，等待所有任务完成  # 内部注释，说明超时设置
+                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10.0)  # 带超时地并发等待所有任务
+            except asyncio.TimeoutError:  # 如果等待超时
+                logger.warning("部分任务未在超时内完成，强制取消")  # 记录警告日志，说明将强制取消
+                for t in tasks:  # 遍历所有未完成的任务
+                    t.cancel()  # 取消任务
+        # 关闭分布式缓存连接  # 内部注释，说明关闭缓存连接
+        from app.core.cache import close_cache  # 延迟导入缓存关闭函数
+        await close_cache()  # 关闭全局缓存服务（释放Redis连接）
+        # 关闭数据库连接池  # 内部注释，说明关闭连接池
         await close_pool()  # 关闭数据库连接池
         logger.info("应用已关闭")  # 记录关闭日志
 
@@ -144,9 +167,10 @@ def create_app() -> FastAPI:  # 定义应用工厂函数
     # 频率限制器  # 内部注释
     app.state.limiter = limiter  # 将限流器保存到应用状态
 
-    # 注册路由  # 内部注释
+    # 注册路由（统一添加 API v1 版本前缀）  # 内部注释，说明路由注册使用版本前缀
+    api_prefix = settings.API_V1_PREFIX  # 获取 API 版本前缀
     for router in ALL_ROUTERS:  # 遍历所有路由器
-        app.include_router(router)  # 注册路由器到应用
+        app.include_router(router, prefix=api_prefix)  # 挂载版本前缀
 
     # Prometheus 指标（可选）  # 内部注释
     try:  # 尝试启用Prometheus

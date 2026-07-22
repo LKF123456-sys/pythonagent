@@ -7,6 +7,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      "/api/v1/ws": { // 开发环境下代理版本化后的 WebSocket 路径，避免前端一直重连
+        target: "ws://127.0.0.1:8000", // WebSocket 后端目标地址
+        ws: true, // 开启 WebSocket 代理支持
+        changeOrigin: true, // 修改来源头以匹配后端服务
+      },
       "/api": {
         target: "http://127.0.0.1:8000",
         changeOrigin: true,

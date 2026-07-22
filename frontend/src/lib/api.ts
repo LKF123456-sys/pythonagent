@@ -1,4 +1,4 @@
-// API 客户端：axios + JWT 双 Token 自动刷新 + 统一端点封装
+﻿// API 客户端：axios + JWT 双 Token 自动刷新 + 统一端点封装
 import axios, { AxiosError, type AxiosRequestConfig } from "axios";
 import type {
   AuthResponse,
@@ -12,6 +12,7 @@ import type {
   UserInfo,
 } from "../types";
 
+const API_PREFIX = "/api/v1"; // 后端统一的 API v1 版本前缀，避免前端继续请求旧的 /api 路径
 const ACCESS_KEY = "agent_access_token";
 const REFRESH_KEY = "agent_refresh_token";
 
@@ -45,7 +46,7 @@ let refreshing: Promise<string> | null = null;
 async function doRefresh(): Promise<string> {
   const refresh = getRefreshToken();
   if (!refresh) throw new Error("无刷新令牌");
-  const { data } = await axios.post<AuthResponse>("/api/auth/refresh", {
+  const { data } = await axios.post<AuthResponse>(`${API_PREFIX}` + "/auth/refresh", {
     refresh_token: refresh,
   });
   setTokens(data.access_token, data.refresh_token);
@@ -91,38 +92,38 @@ export function errDetail(e: unknown, fallback = "请求失败"): string {
 // ============================================================
 
 export const register = (username: string, password: string) =>
-  http.post<AuthResponse>("/api/auth/register", { username, password }).then((r) => r.data);
+  http.post<AuthResponse>(`${API_PREFIX}` + "/auth/register", { username, password }).then((r) => r.data);
 
 export const login = (username: string, password: string) =>
-  http.post<AuthResponse>("/api/auth/login", { username, password }).then((r) => r.data);
+  http.post<AuthResponse>(`${API_PREFIX}` + "/auth/login", { username, password }).then((r) => r.data);
 
 export const logout = (refresh_token?: string) =>
-  http.post("/api/auth/logout", refresh_token ? { refresh_token } : {});
+  http.post(`${API_PREFIX}` + "/auth/logout", refresh_token ? { refresh_token } : {});
 
-export const fetchMe = () => http.get<UserInfo>("/api/auth/me").then((r) => r.data);
+export const fetchMe = () => http.get<UserInfo>(`${API_PREFIX}` + "/auth/me").then((r) => r.data);
 
 // ============================================================
 // 会话
 // ============================================================
 
 export const listConversations = (convType: "general" | "mfg" = "general") =>
-  http.get<{ conversations: Conversation[] }>("/api/conversations", { params: { conv_type: convType } }).then((r) => r.data.conversations);
+  http.get<{ conversations: Conversation[] }>(`${API_PREFIX}` + "/conversations", { params: { conv_type: convType } }).then((r) => r.data.conversations);
 
 export const getMessages = (id: string) =>
-  http.get<{ messages: Message[] }>(`/api/conversations/${id}/messages`).then((r) => r.data.messages);
+  http.get<{ messages: Message[] }>(`${API_PREFIX}/conversations/${id}/messages`).then((r) => r.data.messages);
 
 export const renameConversation = (id: string, title: string) =>
-  http.patch(`/api/conversations/${id}`, { title });
+  http.patch(`${API_PREFIX}/conversations/${id}`, { title });
 
-export const deleteConversation = (id: string) => http.delete(`/api/conversations/${id}`);
+export const deleteConversation = (id: string) => http.delete(`${API_PREFIX}/conversations/${id}`);
 
 export const exportConversation = (id: string, format: "markdown" | "json") =>
   http
-    .get(`/api/conversations/${id}/export`, { params: { format }, responseType: "blob" })
+    .get(`${API_PREFIX}/conversations/${id}/export`, { params: { format }, responseType: "blob" })
     .then((r) => r.data as Blob);
 
 export const getTokenStats = (days = 30) =>
-  http.get<TokenStats>("/api/stats/tokens", { params: { days } }).then((r) => r.data);
+  http.get<TokenStats>(`${API_PREFIX}` + "/stats/tokens", { params: { days } }).then((r) => r.data);
 
 // ============================================================
 // 聊天（非流式 + 上传）
@@ -130,7 +131,7 @@ export const getTokenStats = (days = 30) =>
 
 export const chatOnce = (question: string, session_id?: string, image_filename?: string) =>
   http
-    .post<{ answer: string; session_id: string; token_count: number; error?: string }>("/api/chat", {
+    .post<{ answer: string; session_id: string; token_count: number; error?: string }>(`${API_PREFIX}` + "/chat", {
       question,
       session_id,
       image_filename,
@@ -140,7 +141,7 @@ export const chatOnce = (question: string, session_id?: string, image_filename?:
 export const uploadImage = (file: File) => {
   const form = new FormData();
   form.append("file", file);
-  return http.post<{ filename: string }>("/api/chat/upload-image", form).then((r) => r.data.filename);
+  return http.post<{ filename: string }>(`${API_PREFIX}` + "/chat/upload-image", form).then((r) => r.data.filename);
 };
 
 // ============================================================
@@ -151,26 +152,26 @@ export const uploadDocument = (file: File) => {
   const form = new FormData();
   form.append("file", file);
   return http
-    .post<{ filename: string; chunks: number }>("/api/documents/upload", form)
+    .post<{ filename: string; chunks: number }>(`${API_PREFIX}` + "/documents/upload", form)
     .then((r) => r.data);
 };
 
 export const listDocuments = () =>
-  http.get<{ documents: DocumentInfo[] }>("/api/documents").then((r) => r.data.documents);
+  http.get<{ documents: DocumentInfo[] }>(`${API_PREFIX}` + "/documents").then((r) => r.data.documents);
 
 export const deleteDocument = (filename: string) =>
-  http.delete(`/api/documents/${encodeURIComponent(filename)}`);
+  http.delete(`${API_PREFIX}/documents/${encodeURIComponent(filename)}`);
 
 // ============================================================
 // 管理后台
 // ============================================================
 
 export const listUsers = () =>
-  http.get<{ users: AdminUser[] }>("/api/admin/users").then((r) => r.data.users);
+  http.get<{ users: AdminUser[] }>(`${API_PREFIX}` + "/admin/users").then((r) => r.data.users);
 
 export const setUserActive = (userId: number, is_active: boolean) =>
-  http.patch(`/api/admin/users/${userId}`, { is_active });
+  http.patch(`${API_PREFIX}/admin/users/${userId}`, { is_active });
 
-export const getSystemStats = () => http.get<SystemStats>("/api/admin/stats").then((r) => r.data);
+export const getSystemStats = () => http.get<SystemStats>(`${API_PREFIX}` + "/admin/stats").then((r) => r.data);
 
-export const getHealth = () => http.get<HealthReport>("/api/health").then((r) => r.data);
+export const getHealth = () => http.get<HealthReport>(`${API_PREFIX}` + "/health").then((r) => r.data);

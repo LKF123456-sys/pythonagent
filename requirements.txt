@@ -21,6 +21,8 @@ pydantic-settings>=2.0.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9
+# 多进程部署：gunicorn 作为进程管理器，配合 uvicorn worker 支持 ASGI 异步
+gunicorn>=22.0.0
 
 # 请求频率限制
 slowapi>=0.1.9
@@ -34,6 +36,9 @@ asyncpg>=0.29.0
 
 # 向量扩展（pgvector Python 辅助库）
 pgvector>=0.3.0
+
+# 分布式缓存（Redis，优先使用；不可用时回退内存缓存）
+redis>=5.0.0
 
 # 本地 Ollama 模型（视觉识别 + 嵌入）
 ollama>=0.4.0

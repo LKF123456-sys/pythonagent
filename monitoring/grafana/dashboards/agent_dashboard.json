@@ -1,0 +1,86 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "title": "Multi-Agent System Dashboard",
+  "tags": [
+    "agent",
+    "llm"
+  ],
+  "timezone": "browser",
+  "panels": [
+    {
+      "title": "Agent 请求总量",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(agent_requests_total[5m])) by (route_type)",
+          "legendFormat": "{{route_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "req/s"
+        }
+      }
+    },
+    {
+      "title": "LLM 响应耗时",
+      "type": "graph",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(llm_response_duration_seconds_bucket[5m])) by (le, agent_name))",
+          "legendFormat": "{{agent_name}} P95"
+        }
+      ]
+    },
+    {
+      "title": "熔断器状态",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "circuit_breaker_state",
+          "legendFormat": "State"
+        }
+      ]
+    },
+    {
+      "title": "Token 消耗速率",
+      "type": "graph",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(token_usage_total[1m]))",
+          "legendFormat": "tokens/min"
+        }
+      ]
+    },
+    {
+      "title": "HTTP 请求 QPS",
+      "type": "graph",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total[5m]))",
+          "legendFormat": "QPS"
+        }
+      ]
+    },
+    {
+      "title": "错误率",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m])) * 100",
+          "legendFormat": "Error Rate %"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 30,
+  "version": 1
+}

@@ -92,6 +92,21 @@ class PostgresPool:
             row = await conn.fetchrow(sql, *params)  # 执行带 RETURNING 的语句并取回结果行
             return row[0] if row else None  # 返回第一列的值；无结果时返回 None
 
+    @asynccontextmanager  # 装饰为异步上下文管理器，支持 async with 语法
+    async def transaction(self) -> AsyncGenerator[asyncpg.Connection, None]:
+        """事务上下文管理器：自动提交或回滚。"""
+        if self._pool is None:  # 若连接池未初始化则抛出异常
+            raise RuntimeError("连接池未初始化")  # 抛出运行时错误
+        async with self._pool.acquire() as conn:  # 从池中获取一个连接
+            tx = conn.transaction()  # 创建事务对象
+            await tx.start()  # 开始事务
+            try:  # 尝试执行事务内的操作
+                yield conn  # 将连接交给调用方使用
+                await tx.commit()  # 提交事务
+            except Exception:  # 若事务内发生异常
+                await tx.rollback()  # 异常时回滚事务
+                raise  # 重新抛出异常
+
 
 # 全局连接池单例（由 FastAPI lifespan 管理生命周期）
 _pool: Optional[PostgresPool] = None  # 模块级单例变量，初始为 None，由 init_pool() 设置

@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     LLM_CIRCUIT_FAILURE_THRESHOLD: int = 5  # 连续失败多少次后熔断
     LLM_CIRCUIT_RECOVERY_TIMEOUT: int = 60  # 熔断后冷却多少秒进入半开
     LLM_TOKEN_BUDGET_PER_MINUTE: int = 0    # 每分钟 token 预算（0=不限）
+    LLM_TIMEOUT_SECONDS: int = 60            # LLM 单次调用超时时间（秒），超时后自动取消请求
     FALLBACK_MODEL_NAME: str = ""           # 降级模型名（空=不启用降级）
     FALLBACK_OPENAI_BASE_URL: str = ""      # 降级模型 base_url（空=同主模型）
 
@@ -60,6 +61,27 @@ class Settings(BaseSettings):
     # ---- 记忆管理 ----
     MAX_HISTORY_TURNS: int = 10  # 对话历史保留的最大轮数，控制上下文长度
     LONG_TERM_TOP_K: int = 5  # 长期记忆检索返回的相似结果数量
+
+    # ---- 混合检索 ----
+    HYBRID_SEARCH_ENABLED: bool = True       # 是否启用混合检索（向量+关键词），默认开启
+    HYBRID_KEYWORD_WEIGHT: float = 0.3       # 关键词检索权重（0-1，剩余为向量权重）
+    HYBRID_RERANK_TOP_K: int = 20            # reranking 前候选数量（先检索top_k条再重排）
+    RERANK_MODEL: str = ""                    # reranking模型名（空=使用简单分数融合）
+
+    # ---- 历史上下文缓存（减少重复数据库查询） ----
+    HISTORY_CACHE_TTL_SECONDS: int = 120    # 历史上下文缓存有效期（秒），默认2分钟
+    HISTORY_CACHE_MAX_SIZE: int = 200        # 历史上下文缓存最大条目数，防止内存无限增长
+
+    # ---- 工具调用 ----
+    MAX_TOOL_CALL_ROUNDS: int = 3            # Function Calling 最大工具调用轮数，防止无限循环
+
+    # ---- API 版本管理 ----
+    API_V1_PREFIX: str = "/api/v1"            # API v1 版本前缀，所有路由统一挂载此前缀
+
+    # ---- Redis 缓存 ----
+    REDIS_URL: str = "redis://localhost:6379/0"    # Redis 连接地址，默认本地6379端口0号库
+    REDIS_CACHE_TTL_SECONDS: int = 120              # Redis 缓存默认过期时间（秒）
+    REDIS_ENABLED: bool = False                     # 是否启用Redis缓存（False时回退到内存缓存）
 
     # ---- 文件上传 ----
     UPLOAD_FOLDER: str = os.path.join(  # 文件上传存储目录路径，位于项目根目录下的uploads文件夹
@@ -91,6 +113,14 @@ class Settings(BaseSettings):
 
     # ---- CORS ----
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173"  # 允许跨域的源列表，逗号分隔
+
+    # ---- 分布式部署 ----
+    WORKER_COUNT: int = 1                    # 当前实例的worker数量（用于日志标识）
+    INSTANCE_ID: str = ""                    # 实例唯一标识（空=自动生成hostname:pid）
+
+    # ---- Human-in-the-loop ----
+    HITL_ENABLED: bool = False             # 是否启用人工审批（False时跳过审批直接执行）
+    HITL_SENSITIVE_KEYWORDS: str = "删除,移除,清空,重置,执行,下载,安装"  # 触发人工审批的敏感关键词，逗号分隔
 
     @field_validator("JWT_SECRET_KEY", mode="before")  # pydantic字段验证器，在类型转换前对JWT_SECRET_KEY字段执行校验
     @classmethod  # 声明为类方法，可通过类或实例调用

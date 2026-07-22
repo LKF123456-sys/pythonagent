@@ -1,4 +1,4 @@
-// 工业智能制造垂直多智能体页面（增强版：图片上传 + 文档RAG + Token用量 + 历史会话）
+﻿// 工业智能制造垂直多智能体页面（增强版：图片上传 + 文档RAG + Token用量 + 历史会话）
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MfgSocket, type MfgWSStatus } from "../lib/mfg-ws";
 import { MessageBubble } from "../components/MessageBubble";
@@ -221,7 +221,7 @@ export default function Manufacturing() {
   // 加载文档列表
   const refreshDocs = useCallback(async () => {
     try {
-      const { data } = await mfgHttp().get("/api/manufacturing/documents");
+      const { data } = await mfgHttp().get("/api/v1/mfg/documents");
       setDocs(data.documents ?? []);
     } catch {
       // 静默失败
@@ -244,7 +244,7 @@ export default function Manufacturing() {
     try {
       const form = new FormData();
       form.append("file", file);
-      const { data } = await mfgHttp().post("/api/manufacturing/upload-image", form);
+      const { data } = await mfgHttp().post("/api/v1/mfg/upload-image", form);
       setImageServerName(data.filename);
       setImageUploading(false);
     } catch (e) {
@@ -268,7 +268,7 @@ export default function Manufacturing() {
     try {
       const form = new FormData();
       form.append("file", file);
-      const { data } = await mfgHttp().post("/api/manufacturing/documents/upload", form);
+      const { data } = await mfgHttp().post("/api/v1/mfg/documents/upload", form);
       toast(`「${data.filename}」已入库，切分为 ${data.chunks} 个片段`, "success");
       await refreshDocs();
     } catch (e) {
@@ -280,7 +280,7 @@ export default function Manufacturing() {
 
   const deleteDoc = async (filename: string) => {
     try {
-      await mfgHttp().delete(`/api/manufacturing/documents/${encodeURIComponent(filename)}`);
+      await mfgHttp().delete(`/api/v1/mfg/documents/${encodeURIComponent(filename)}`);
       toast(`已删除「${filename}」`, "success");
       await refreshDocs();
     } catch (e) {

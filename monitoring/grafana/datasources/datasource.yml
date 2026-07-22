@@ -1,0 +1,10 @@
+# Grafana 数据源配置：自动配置 Prometheus 数据源
+
+apiVersion: 1  # Grafana数据源配置API版本
+datasources:  # 数据源列表
+  - name: Prometheus  # 数据源名称，在Grafana中显示的名称
+    type: prometheus  # 数据源类型，指定为Prometheus
+    access: proxy  # 访问模式为代理，由Grafana后端代理请求
+    url: http://prometheus:9090  # Prometheus服务地址，prometheus为Docker内服务名
+    isDefault: true  # 设为默认数据源，新建面板时自动选中
+    editable: true  # 允许在Grafana界面中编辑此数据源配置

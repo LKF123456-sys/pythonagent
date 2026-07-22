@@ -1,0 +1,14 @@
+# Prometheus 配置：抓取多智能体系统指标
+
+global:  # 全局配置，应用于所有抓取任务
+  scrape_interval: 15s  # 抓取间隔15秒，即每15秒采集一次指标
+  evaluation_interval: 15s  # 规则评估间隔15秒，即每15秒评估一次告警规则
+
+rule_files:  # 告警规则文件列表
+  - "alert_rules.yml"  # 引用告警规则文件，与prometheus.yml同目录
+
+scrape_configs:  # 抓取配置列表，定义要监控的目标
+  - job_name: "multi-agent-system"  # 任务名称，用于标识被监控的服务
+    metrics_path: "/metrics"  # 指标暴露路径，FastAPI应用在此路径提供Prometheus格式指标
+    static_configs:  # 静态配置，手动指定抓取目标
+      - targets: ["backend:8000"]  # 后端服务地址和端口，backend为Docker内服务名

@@ -196,7 +196,7 @@ async def websocket_chat(  # 定义WebSocket聊天处理函数
 # REST 端点（非流式 + 图片上传）  # 说明该部分为REST端点
 # ============================================================  # 分隔注释
 
-@router.post("/api/chat", response_model=ChatResponse)  # 注册POST路由，非流式聊天
+@router.post("/chat", response_model=ChatResponse)  # 注册POST路由，非流式聊天
 async def chat(  # 定义异步聊天函数
     body: ChatRequest,  # 请求体，包含问题和会话信息
     user: dict = Depends(get_current_user),  # 依赖注入当前用户校验
@@ -210,7 +210,7 @@ async def chat(  # 定义异步聊天函数
     )
 
 
-@router.post("/api/chat/upload-image", response_model=UploadResponse)  # 注册POST路由，上传图片
+@router.post("/chat/upload-image", response_model=UploadResponse)  # 注册POST路由，上传图片
 async def upload_image(  # 定义异步图片上传函数
     file: UploadFile = File(...),  # 必填上传文件参数
     user: dict = Depends(get_current_user),  # 依赖注入当前用户校验

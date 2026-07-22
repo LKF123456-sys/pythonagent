@@ -40,6 +40,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 复制后端代码（新分层架构 app/ 包 + 启动入口）
 COPY app/ ./app/
 COPY main.py .
+# 复制 gunicorn 配置文件：多 worker 进程部署所需
+COPY gunicorn_conf.py .
 
 # 复制前端构建产物：app/main.py 的 _mount_frontend 会从 frontend/dist 挂载
 # 使单容器即可同时提供 API / WebSocket / 前端页面（同源，无需反向代理）
@@ -55,4 +57,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD python -c "import httpx,sys; r=httpx.get('http://localhost:8000/api/health',timeout=5); r.raise_for_status(); sys.exit(1 if r.json().get('status')=='unhealthy' else 0)"
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 启动命令：使用 gunicorn + uvicorn worker 实现多进程部署
+# -c 指定 gunicorn 配置文件，worker 类在配置文件中设置为 UvicornWorker
+CMD ["gunicorn", "app.main:app", "-c", "gunicorn_conf.py"]

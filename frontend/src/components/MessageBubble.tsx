@@ -59,7 +59,7 @@ export function MessageBubble({ message, streaming = false, thinking, username, 
                 {message.image_filename && (
                   <img
                     className="msg-bubble-image"
-                    src={`/api/uploads/${message.image_filename}?token=${getAccessToken() ?? ""}`}
+                    src={`/api/v1/uploads/${message.image_filename}?token=${getAccessToken() ?? ""}`}
                     alt="上传图片"
                     loading="lazy"
                   />

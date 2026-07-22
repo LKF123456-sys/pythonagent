@@ -65,6 +65,86 @@ class VectorStore:
         return self._available is True  # 返回当前可用性状态
 
     # ============================================================
+    # 混合检索（向量 + 关键词 + reranking 融合）
+    # ============================================================
+
+    async def _keyword_search(
+        self, query: str, table: str, top_k: int, user_id: Optional[int] = None
+    ) -> list[dict]:  # 关键词全文检索方法，返回字典列表
+        """PostgreSQL 全文检索（关键词匹配）。
+
+        利用 tsvector 列与 GIN 索引执行高效全文检索，
+        按ts_rank相关度降序返回结果。
+        可选 user_id 参数用于长期记忆按用户过滤。
+        """
+        pool = get_pool()  # 获取数据库连接池实例
+        if user_id is not None:  # 若指定了用户ID则按用户过滤检索
+            # 构建带用户过滤的全文检索SQL
+            sql = f"""  -- 带用户过滤的全文检索SQL
+                SELECT *, ts_rank(tsv, plainto_tsquery('simple', $1)) AS rank  -- 查询所有列并计算全文检索相关度分数
+                FROM {table}  -- 指定检索的表
+                WHERE tsv @@ plainto_tsquery('simple', $1) AND user_id = $2  -- 全文匹配且用户ID匹配
+                ORDER BY rank DESC  -- 按相关度降序排列
+                LIMIT $3  -- 限制返回数量
+            """  # SQL结束
+            rows = await pool.fetch_all(sql, (query, user_id, top_k))  # 执行带用户过滤的查询
+        else:  # 未指定用户ID则全局检索
+            # 构建全文检索SQL（无用户过滤）
+            sql = f"""  -- 全文检索SQL
+                SELECT *, ts_rank(tsv, plainto_tsquery('simple', $1)) AS rank  -- 查询所有列并计算全文检索相关度分数
+                FROM {table}  -- 指定检索的表
+                WHERE tsv @@ plainto_tsquery('simple', $1)  -- 全文匹配条件
+                ORDER BY rank DESC  -- 按相关度降序排列
+                LIMIT $2  -- 限制返回数量
+            """  # SQL结束
+            rows = await pool.fetch_all(sql, (query, top_k))  # 执行查询
+        return rows  # 返回结果列表
+
+    def _rerank_fusion(
+        self,
+        vector_results: list[dict],
+        keyword_results: list[dict],
+        vector_weight: float,
+        keyword_weight: float,
+        top_k: int,
+    ) -> list[dict]:  # 加权分数融合reranking方法
+        """加权分数融合 reranking：合并向量检索和关键词检索结果。
+
+        对两组结果分别归一化后按权重加权累加，
+        最终按融合分数降序取top_k返回。
+        """
+        scores: dict[str, float] = {}  # 内容到融合分数的映射
+        items: dict[str, dict] = {}  # 内容到数据项的映射
+
+        # 处理向量检索结果（分数归一化后按权重加权）
+        if vector_results:  # 如果向量检索有结果
+            max_score = max((r.get('similarity', 0) for r in vector_results), default=1)  # 获取最大相似度用于归一化
+            for r in vector_results:  # 遍历向量检索结果
+                content = r.get('content', '')  # 获取内容作为唯一键
+                normalized = r.get('similarity', 0) / max_score if max_score > 0 else 0  # 归一化分数到0-1
+                scores[content] = scores.get(content, 0) + normalized * vector_weight  # 加权累加
+                items[content] = r  # 保存数据项
+
+        # 处理关键词检索结果（分数归一化后按权重加权）
+        if keyword_results:  # 如果关键词检索有结果
+            max_rank = max((r.get('rank', 0) for r in keyword_results), default=1)  # 获取最大rank用于归一化
+            for r in keyword_results:  # 遍历关键词检索结果
+                content = r.get('content', '')  # 获取内容作为唯一键
+                normalized = r.get('rank', 0) / max_rank if max_rank > 0 else 0  # 归一化分数到0-1
+                scores[content] = scores.get(content, 0) + normalized * keyword_weight  # 加权累加
+                if content not in items:  # 如果该内容不在items中（仅关键词检索命中）
+                    items[content] = r  # 保存数据项
+
+        # 按融合分数降序排序，取top_k
+        sorted_contents = sorted(scores.items(), key=lambda x: x[1], reverse=True)  # 按分数降序排序
+        result = []  # 结果列表
+        for content, score in sorted_contents[:top_k]:  # 取前top_k个
+            item = items[content].copy()  # 复制数据项
+            item['fusion_score'] = score  # 添加融合分数
+            result.append(item)  # 加入结果列表
+        return result  # 返回融合排序后的结果
+
+    # ============================================================
     # 长期记忆
     # ============================================================
 
@@ -106,7 +186,11 @@ class VectorStore:
     async def retrieve_long_term_memories(
         self, query: str, user_id: Optional[str] = None, top_k: int = 5
     ) -> List[Dict]:  # 检索与查询相关的历史对话
-        """从长期记忆中检索相关历史对话。"""
+        """从长期记忆中检索相关历史对话。
+
+        当 HYBRID_SEARCH_ENABLED 为 True 时启用混合检索（向量+关键词+融合重排），
+        否则保持原有纯向量检索逻辑。
+        """
         if not await self.initialize():  # 若向量库不可用则返回空列表
             return []
         try:  # 计算查询的嵌入向量
@@ -115,23 +199,69 @@ class VectorStore:
             logger.warning("嵌入计算失败，跳过检索: %s", e)
             return []
         pool = get_pool()  # 获取连接池
-        if user_id:  # 若提供了 user_id 则按用户过滤
+        settings = get_settings()  # 获取配置用于判断是否启用混合检索
+        # 解析 user_id：尝试转换为整数，非数字则置为 None
+        uid = None  # 初始化用户ID为None
+        if user_id:  # 若提供了 user_id
             uid = int(user_id) if isinstance(user_id, str) and user_id.isdigit() else None  # 尝试转换为整数
-            if uid is not None:  # 转换成功则按用户 ID 检索
-                rows = await pool.fetch_all(
+
+        if settings.HYBRID_SEARCH_ENABLED:  # 启用混合检索分支
+            candidate_k = settings.HYBRID_RERANK_TOP_K  # 候选数量（reranking前的检索数量）
+            # ---- 向量检索：取 candidate_k 条候选 ----
+            if uid is not None:  # 有有效用户ID则按用户过滤向量检索
+                vector_rows = await pool.fetch_all(
                     "SELECT content, metadata, embedding <=> $1 AS distance "  # cosine 距离算子 <=>
                     "FROM long_term_memories WHERE user_id = $2 "  # 过滤指定用户
-                    "ORDER BY embedding <=> $1 LIMIT $3",  # 按距离升序取 top_k
-                    (embedding, uid, top_k),  # 参数：嵌入向量、用户 ID、返回条数
+                    "ORDER BY embedding <=> $1 LIMIT $3",  # 按距离升序取候选数量
+                    (embedding, uid, candidate_k),  # 参数：嵌入向量、用户ID、候选数量
                 )
-            else:  # user_id 非数字，忽略用户过滤进行全局检索
-                rows = await pool.fetch_all(
-                    "SELECT content, metadata, embedding <=> $1 AS distance "
-                    "FROM long_term_memories "
-                    "ORDER BY embedding <=> $1 LIMIT $2",
-                    (embedding, top_k),
+            else:  # 无有效用户ID则全局向量检索
+                vector_rows = await pool.fetch_all(
+                    "SELECT content, metadata, embedding <=> $1 AS distance "  # cosine 距离算子 <=>
+                    "FROM long_term_memories "  # 不限用户
+                    "ORDER BY embedding <=> $1 LIMIT $2",  # 按距离升序取候选数量
+                    (embedding, candidate_k),  # 参数：嵌入向量、候选数量
                 )
-        else:  # 未提供 user_id，全局检索
+            # 将向量检索的 distance 转换为 similarity 供融合使用
+            vector_results = []  # 向量检索结果列表（含similarity字段）
+            for r in vector_rows:  # 遍历向量检索原始行
+                item = r.copy()  # 复制行字典避免修改原始数据
+                item['similarity'] = 1.0 - float(r.get('distance', 1.0))  # 距离转相似度（cosine distance → similarity）
+                vector_results.append(item)  # 加入向量结果列表
+            # ---- 关键词检索：取 candidate_k 条候选 ----
+            keyword_results = await self._keyword_search(query, 'long_term_memories', candidate_k, user_id=uid)  # 全文检索
+            # ---- 加权分数融合 reranking ----
+            fused_rows = self._rerank_fusion(  # 调用融合方法合并两组结果
+                vector_results,  # 向量检索结果
+                keyword_results,  # 关键词检索结果
+                1.0 - settings.HYBRID_KEYWORD_WEIGHT,  # 向量权重 = 1 - 关键词权重
+                settings.HYBRID_KEYWORD_WEIGHT,  # 关键词权重
+                top_k,  # 最终返回数量
+            )
+            # ---- 格式化融合后的结果为记忆列表 ----
+            memories = []  # 初始化结果列表
+            for r in fused_rows:  # 遍历融合后的结果行
+                meta = r.get("metadata")  # 获取元数据
+                if meta is None:  # 元数据为None时使用空字典
+                    meta = {}
+                elif not isinstance(meta, dict):  # 元数据若为字符串则解析为字典
+                    meta = json.loads(meta)
+                memories.append({  # 构造记忆字典
+                    "content": r.get("content", ""),  # 记忆内容
+                    "metadata": meta,  # 元数据
+                    "fusion_score": r.get("fusion_score", 0.0),  # 融合分数（混合检索时使用）
+                })
+            return memories  # 返回记忆列表
+
+        # ---- 非混合检索：保持原有纯向量检索逻辑 ----
+        if uid is not None:  # 转换成功则按用户 ID 检索
+            rows = await pool.fetch_all(
+                "SELECT content, metadata, embedding <=> $1 AS distance "  # cosine 距离算子 <=>
+                "FROM long_term_memories WHERE user_id = $2 "  # 过滤指定用户
+                "ORDER BY embedding <=> $1 LIMIT $3",  # 按距离升序取 top_k
+                (embedding, uid, top_k),  # 参数：嵌入向量、用户 ID、返回条数
+            )
+        else:  # user_id 非数字或未提供，全局检索
             rows = await pool.fetch_all(
                 "SELECT content, metadata, embedding <=> $1 AS distance "
                 "FROM long_term_memories "
@@ -189,7 +319,11 @@ class VectorStore:
         return count  # 返回成功存入的切片数
 
     async def retrieve_rag_context(self, query: str, top_k: int = 3) -> str:
-        """从 RAG 文档库检索相关文档片段。"""
+        """从 RAG 文档库检索相关文档片段。
+
+        当 HYBRID_SEARCH_ENABLED 为 True 时启用混合检索（向量+关键词+融合重排），
+        否则保持原有纯向量检索逻辑。
+        """
         if not await self.initialize():  # 若向量库不可用则返回空字符串
             return ""
         try:  # 计算查询嵌入
@@ -198,11 +332,38 @@ class VectorStore:
             logger.warning("嵌入计算失败，跳过RAG检索: %s", e)
             return ""
         pool = get_pool()  # 获取连接池
-        rows = await pool.fetch_all(
-            "SELECT content, filename, section_title, embedding <=> $1 AS distance "  # 查询内容、文件名、章节与距离
-            "FROM rag_chunks ORDER BY embedding <=> $1 LIMIT $2",  # 按距离升序取 top_k
-            (embedding, top_k),
-        )
+        settings = get_settings()  # 获取配置用于判断是否启用混合检索
+
+        if settings.HYBRID_SEARCH_ENABLED:  # 启用混合检索分支
+            candidate_k = settings.HYBRID_RERANK_TOP_K  # 候选数量（reranking前的检索数量）
+            # ---- 向量检索：取 candidate_k 条候选 ----
+            vector_rows = await pool.fetch_all(
+                "SELECT content, filename, section_title, embedding <=> $1 AS distance "  # 查询内容、文件名、章节与距离
+                "FROM rag_chunks ORDER BY embedding <=> $1 LIMIT $2",  # 按距离升序取候选数量
+                (embedding, candidate_k),  # 参数：嵌入向量、候选数量
+            )
+            # 将向量检索的 distance 转换为 similarity 供融合使用
+            vector_results = []  # 向量检索结果列表（含similarity字段）
+            for r in vector_rows:  # 遍历向量检索原始行
+                item = r.copy()  # 复制行字典避免修改原始数据
+                item['similarity'] = 1.0 - float(r.get('distance', 1.0))  # 距离转相似度（cosine distance → similarity）
+                vector_results.append(item)  # 加入向量结果列表
+            # ---- 关键词检索：取 candidate_k 条候选 ----
+            keyword_results = await self._keyword_search(query, 'rag_chunks', candidate_k)  # 全文检索（无用户过滤）
+            # ---- 加权分数融合 reranking ----
+            rows = self._rerank_fusion(  # 调用融合方法合并两组结果
+                vector_results,  # 向量检索结果
+                keyword_results,  # 关键词检索结果
+                1.0 - settings.HYBRID_KEYWORD_WEIGHT,  # 向量权重 = 1 - 关键词权重
+                settings.HYBRID_KEYWORD_WEIGHT,  # 关键词权重
+                top_k,  # 最终返回数量
+            )
+        else:  # 非混合检索：保持原有纯向量检索逻辑
+            rows = await pool.fetch_all(
+                "SELECT content, filename, section_title, embedding <=> $1 AS distance "  # 查询内容、文件名、章节与距离
+                "FROM rag_chunks ORDER BY embedding <=> $1 LIMIT $2",  # 按距离升序取 top_k
+                (embedding, top_k),
+            )
         if not rows:  # 若无结果则返回空字符串
             return ""
         parts = ["[RAG文档检索结果]"]  # 上下文首行标题
