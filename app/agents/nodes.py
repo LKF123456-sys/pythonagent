@@ -260,7 +260,11 @@ async def search_node(state: AgentState) -> dict:  # 定义搜索节点异步函
     user_question = state["user_question"]  # 获取用户问题
     logger.info("搜索Agent: 正在执行联网搜索...")  # 记录日志：正在搜索
     t0 = time.time()  # 记录开始时间
-    results = await _search_web(user_question)  # 调用联网搜索函数
+    try:  # 捕获联网搜索内部异常，避免搜索失败导致整条智能体链路中断
+        results = await _search_web(user_question)  # 调用联网搜索函数
+    except Exception as e:  # 如果关键词提取或Tavily搜索失败
+        logger.exception("搜索Agent: 联网搜索失败，进入降级回答")  # 记录完整异常堆栈，便于后续排查真实外部服务问题
+        results = f"联网搜索暂时不可用，原因：{e}。请基于已有知识回答用户，并明确说明无法获取实时搜索结果。"  # 构造可传给回答节点的降级上下文
     _record_llm_duration("search", time.time() - t0)  # 记录搜索耗时指标
     logger.info("搜索Agent: 搜索完成（%d字符）", len(results))  # 记录搜索完成日志，含结果字符数
     return {"search_results": results}  # 返回包含搜索结果的状态更新

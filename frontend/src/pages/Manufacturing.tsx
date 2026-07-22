@@ -1,4 +1,4 @@
-﻿// 工业智能制造垂直多智能体页面（增强版：图片上传 + 文档RAG + Token用量 + 历史会话）
+// 工业智能制造垂直多智能体页面（增强版：图片上传 + 文档RAG + Token用量 + 历史会话）
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MfgSocket, type MfgWSStatus } from "../lib/mfg-ws";
 import { MessageBubble } from "../components/MessageBubble";
@@ -126,7 +126,7 @@ export default function Manufacturing() {
         setStream((s) => ({ thinking: s?.thinking ?? "", answer: (s?.answer ?? "") + msg.content }));
         break;
       case "done": {
-        const answerText = msg.aborted ? "" : msg.answer;
+        const answerText = msg.aborted ? "" : msg.answer || "抱歉，这一轮没有收到可显示的回答，请稍后重试。";
         const tokens = msg.token_count ?? 0;
         if (tokens > 0) setTotalTokens((prev) => prev + tokens);
         setMessages((prev) => {

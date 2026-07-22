@@ -7,8 +7,8 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from app.agents.stream_parser import ParserState, StreamEvent, TagStreamParser
-from app.agents.nodes import route_after_supervisor, _execute_tool_calls
-from app.agents.graph import _chunk_text, _extract_action, _extract_token_usage
+from app.agents.nodes import route_after_supervisor, _execute_tool_calls, search_node
+from app.agents.graph import _chunk_text, _extract_action, _extract_token_usage, run_agent_stream
 from app.agents.llm import supervisor_decide_cached
 from app.agents.tools import AGENT_TOOLS, calculator, get_current_time
 from app.core.constants import RouteAction
@@ -107,6 +107,26 @@ class TestTagStreamParser:
 # ============================================================
 
 class TestRouting:
+    async def test_search_node_degrades_when_tavily_fails(self, monkeypatch):
+        """联网搜索异常时不应中断整条智能体链路，而应返回可解释降级结果。"""
+        class FakeKeywordLLM:
+            async def ainvoke(self, messages):
+                return AIMessage(content="LangGraph 最新进展")
+
+        class BrokenTavilyClient:
+            def __init__(self, api_key):
+                self.api_key = api_key
+
+            def search(self, *args, **kwargs):
+                raise RuntimeError("tavily timeout")
+
+        monkeypatch.setattr("app.agents.nodes.create_llm", lambda temperature=0.0: FakeKeywordLLM())
+        monkeypatch.setattr("tavily.TavilyClient", BrokenTavilyClient)
+        result = await search_node({"user_question": "LangGraph 最新进展"})
+        assert "search_results" in result
+        assert "联网搜索暂时不可用" in result["search_results"]
+        assert "tavily timeout" in result["search_results"]
+
     def test_route_search(self):
         assert route_after_supervisor({"action": RouteAction.SEARCH}) == "search"
 
@@ -126,6 +146,138 @@ class TestRouting:
 # ============================================================
 
 class TestGraphHelpers:
+    async def test_run_agent_stream_falls_back_to_final_ai_message_when_no_stream_token(self, monkeypatch):
+        """测试模型流事件缺失时，完成事件仍应回退使用最终 AIMessage 内容。"""
+        class FakeGraph:
+            async def astream_events(self, initial_state, config, version):
+                yield {"event": "on_chain_start", "name": "answer", "data": {}}
+                yield {
+                    "event": "on_chain_end",
+                    "name": "answer",
+                    "data": {"output": {"messages": [AIMessage(content="最终回答")]}},
+                }
+
+        monkeypatch.setattr("app.agents.graph.get_graph", lambda: FakeGraph())
+
+        events = [
+            event async for event in run_agent_stream(
+                user_question="你好",
+                thread_id="test-thread",
+                user_id=1,
+            )
+        ]
+        done = events[-1]
+        assert done.type == "done"
+        assert done.answer == "最终回答"
+
+    async def test_run_agent_stream_falls_back_from_nested_answer_output(self, monkeypatch):
+        """测试回答节点输出嵌套在 output 字段时，完成事件仍能提取最终回答。"""
+        class FakeGraph:
+            async def astream_events(self, initial_state, config, version):
+                yield {"event": "on_chain_start", "name": "search", "data": {}}
+                yield {"event": "on_chain_start", "name": "answer", "data": {}}
+                yield {
+                    "event": "on_chain_end",
+                    "name": "answer",
+                    "data": {"output": {"output": {"messages": [AIMessage(content="搜索后的最终回答")]}}},
+                }
+
+        monkeypatch.setattr("app.agents.graph.get_graph", lambda: FakeGraph())
+
+        events = [
+            event async for event in run_agent_stream(
+                user_question="帮我搜索 LangGraph 最新进展",
+                thread_id="test-thread",
+                user_id=1,
+            )
+        ]
+        done = events[-1]
+        assert done.type == "done"
+        assert done.answer == "搜索后的最终回答"
+
+    async def test_run_agent_stream_reads_final_answer_from_checkpoint_state(self, monkeypatch):
+        """测试事件流未捕获答案时，应从 LangGraph 最终检查点状态读取真实 AIMessage。"""
+        class FakeSnapshot:
+            values = {"messages": [AIMessage(content="2026年世界杯决赛将于7月19日举行。")]}
+
+        class FakeGraph:
+            async def astream_events(self, initial_state, config, version):
+                yield {"event": "on_chain_start", "name": "preprocess", "data": {}}
+                yield {"event": "on_chain_start", "name": "supervisor", "data": {}}
+                yield {"event": "on_chain_start", "name": "search", "data": {}}
+                yield {"event": "on_chain_start", "name": "answer", "data": {}}
+                yield {"event": "on_chain_start", "name": "store_memory", "data": {}}
+
+            async def aget_state(self, config):
+                return FakeSnapshot()
+
+        monkeypatch.setattr("app.agents.graph.get_graph", lambda: FakeGraph())
+
+        events = [
+            event async for event in run_agent_stream(
+                user_question="世界杯今年的什么时候结束",
+                thread_id="test-thread",
+                user_id=1,
+            )
+        ]
+        done = events[-1]
+        assert done.type == "done"
+        assert done.answer == "2026年世界杯决赛将于7月19日举行。"
+
+    async def test_run_agent_stream_parses_answer_tag_from_checkpoint_state(self, monkeypatch):
+        """测试从最终检查点恢复的带标签内容，应只把answer正文作为最终回答。"""
+        class FakeSnapshot:
+            values = {"messages": [AIMessage(content="<thinking>内部推理</thinking><answer>今天阜阳多云，气温约25到32度。</answer>")]}
+
+        class FakeGraph:
+            async def astream_events(self, initial_state, config, version):
+                yield {"event": "on_chain_start", "name": "search", "data": {}}
+                yield {"event": "on_chain_start", "name": "answer", "data": {}}
+                yield {"event": "on_chain_start", "name": "store_memory", "data": {}}
+
+            async def aget_state(self, config):
+                return FakeSnapshot()
+
+        monkeypatch.setattr("app.agents.graph.get_graph", lambda: FakeGraph())
+
+        events = [
+            event async for event in run_agent_stream(
+                user_question="阜阳今天的天气",
+                thread_id="test-thread",
+                user_id=1,
+            )
+        ]
+        done = events[-1]
+        assert done.type == "done"
+        assert done.answer == "今天阜阳多云，气温约25到32度。"
+
+    async def test_run_agent_stream_reads_dict_ai_message_from_checkpoint_state(self, monkeypatch):
+        """测试最终检查点 messages 为字典格式时，也能提取 AI 回答。"""
+        class FakeSnapshot:
+            values = {"messages": [{"type": "ai", "content": "<answer>阜阳今天多云。</answer>"}]}
+
+        class FakeGraph:
+            async def astream_events(self, initial_state, config, version):
+                yield {"event": "on_chain_start", "name": "search", "data": {}}
+                yield {"event": "on_chain_start", "name": "answer", "data": {}}
+                yield {"event": "on_chain_start", "name": "store_memory", "data": {}}
+
+            async def aget_state(self, config):
+                return FakeSnapshot()
+
+        monkeypatch.setattr("app.agents.graph.get_graph", lambda: FakeGraph())
+
+        events = [
+            event async for event in run_agent_stream(
+                user_question="阜阳今天的天气",
+                thread_id="test-thread",
+                user_id=1,
+            )
+        ]
+        done = events[-1]
+        assert done.type == "done"
+        assert done.answer == "阜阳今天多云。"
+
     def test_chunk_text_string(self):
         class C:
             content = "你好"

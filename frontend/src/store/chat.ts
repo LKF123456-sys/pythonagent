@@ -88,7 +88,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         const { currentSessionId } = get();
         set((s) => {
           const messages = [...s.messages];
-          const answerText = msg.aborted ? s.stream?.answer ?? "" : msg.answer;
+          const answerText = msg.aborted ? s.stream?.answer ?? "" : msg.answer || s.stream?.answer || "抱歉，这一轮没有收到可显示的回答，请稍后重试。";
           if (answerText) {
             messages.push({
               role: "assistant",
